@@ -259,4 +259,11 @@ def validate(cfg: Config) -> list[str]:
         errors.append("interval_s must be >= 5 (protect power budget / avoid wakeup storms)")
     if cfg.api_bind not in ("127.0.0.1", "::1", "localhost") and not cfg.allow_origins:
         errors.append("api bound to a non-local address without an allow_origins CORS list")
+    # the static web_root must not contain the token/db (it is served unauthenticated)
+    wd = os.path.realpath(cfg.web_dir)
+    if wd == os.path.realpath(cfg.data_dir):
+        errors.append("web_root must not be the data dir (would expose token/db to unauthenticated static serving)")
+    for p in (cfg.token_path, cfg.db_path):
+        if os.path.realpath(p).startswith(wd + os.sep):
+            errors.append(f"web_root must not contain {os.path.basename(p)}")
     return errors

@@ -61,8 +61,9 @@ export class ApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+	// base is '' in same-origin mode → a relative fetch to the agent that served
+	// this page (gated by Cloudflare Access). An absolute base = remote/bearer mode.
 	const base = getApiBase();
-	if (!base) throw new ApiError(0, 'not-configured');
 	const headers = new Headers(init?.headers);
 	const token = getToken();
 	if (token) headers.set('Authorization', `Bearer ${token}`);

@@ -19,6 +19,7 @@ import mimetypes
 import os
 import socket
 import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -302,8 +303,9 @@ def make_handler(cfg: Config, token: str):
                 return self._send(401, {"error": "unauthorized"})
             try:
                 return self._route_get(path, qs)
-            except Exception as e:  # never leak a stack trace / crash the server
-                return self._send(500, {"error": str(e)})
+            except Exception as e:  # never leak internals / crash the server
+                sys.stderr.write(f"a3watch api error on {path}: {e}\n")
+                return self._send(500, {"error": "internal error"})
 
         def _num(self, qs, key, default):
             try:
@@ -383,9 +385,15 @@ def make_handler(cfg: Config, token: str):
             installed."""
             root = os.path.realpath(cfg.web_dir)
             rel = path.lstrip("/") or "index.html"
+            # refuse dotfiles/dotdirs outright (defense-in-depth)
+            if any(seg.startswith(".") for seg in rel.split("/") if seg):
+                return self._send(403, {"error": "forbidden"})
             full = os.path.realpath(os.path.join(root, rel))
             # containment check — never serve outside web_dir
             if full != root and not full.startswith(root + os.sep):
+                return self._send(403, {"error": "forbidden"})
+            # never serve the token/db even if web_root is mis-set to contain them
+            if full in (os.path.realpath(cfg.token_path), os.path.realpath(cfg.db_path)):
                 return self._send(403, {"error": "forbidden"})
             if not os.path.isfile(full):
                 # client-side route (no file extension) → SPA shell; else 404
