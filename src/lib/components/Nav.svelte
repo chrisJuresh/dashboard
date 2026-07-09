@@ -5,6 +5,7 @@
 
 	const links = [
 		{ href: '/', label: 'Overview' },
+		{ href: '/server', label: 'Server' },
 		{ href: '/disks', label: 'Disks' },
 		{ href: '/power', label: 'Power & C‑states' },
 		{ href: '/processes', label: 'Processes' },

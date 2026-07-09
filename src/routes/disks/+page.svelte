@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, ApiError, type ConfigView, type DiskEvent, type DiskPoint } from '$lib/api';
+	import {
+		api,
+		ApiError,
+		type ConfigView,
+		type DiskEvent,
+		type DiskPoint,
+		type MetricsLatest,
+		type Metric
+	} from '$lib/api';
 	import { poll, nowStore } from '$lib/stores';
 	import { fmtRelative, fmtDateTime } from '$lib/format';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -12,7 +20,8 @@
 
 	let config = $state<ConfigView | null>(null);
 	let events = $state<DiskEvent[]>([]);
-	let diskPoints = $state<DiskPoint[]>([]);
+	let stripSeries = $state<Record<string, DiskPoint[]>>({}); // per-dev 24h activity
+	let metrics = $state<MetricsLatest | null>(null);
 	let selectedDev = $state(''); // '' = All
 	let loading = $state(true);
 	let error = $state<unknown>(null);
@@ -23,9 +32,44 @@
 
 	// Rotational devices only — spin state is meaningful for HDDs, not NVMe.
 	const rotational = $derived(config ? config.disks.filter((d) => d.rotational) : []);
-	// The activity strip needs a concrete device: the selected one, or the first HDD.
-	const stripDev = $derived(selectedDev || rotational[0]?.dev || '');
-	const stripMeta = $derived(rotational.find((d) => d.dev === stripDev) ?? null);
+
+	// Look up a single latest metric by collector + key (metrics are grouped for display).
+	function findMetric(collector: string, key: string): Metric | undefined {
+		if (!metrics) return undefined;
+		for (const g of metrics.groups)
+			for (const m of g.metrics) if (m.collector === collector && m.key === key) return m;
+		return undefined;
+	}
+
+	// Per-HDD temperature + awake state from the storage collector. A sleeping disk
+	// isn't probed (spinning it up just to read a sensor would defeat the point), so
+	// its temp metric carries an explanatory txt instead of a number.
+	interface DiskTemp {
+		dev: string;
+		label: string;
+		awake: boolean | null;
+		hasTemp: boolean;
+		reading: string;
+		tip: string;
+	}
+	const diskTemps = $derived.by<DiskTemp[]>(() =>
+		rotational.map((d) => {
+			const temp = findMetric('storage', `${d.dev}.temp`);
+			const awakeM = findMetric('storage', `${d.dev}.awake`);
+			const awake =
+				awakeM?.num != null ? awakeM.num !== 0 : temp?.num != null ? true : null;
+			const hasTemp = temp?.num != null;
+			const reading = hasTemp ? `${Math.round(temp!.num as number)} °C` : (temp?.txt ?? 'no reading');
+			return {
+				dev: d.dev,
+				label: d.label,
+				awake,
+				hasTemp,
+				reading,
+				tip: awakeM?.txt ?? temp?.txt ?? ''
+			};
+		})
+	);
 
 	// Relative timestamps refresh with nowStore (30s tick) as well as on reload.
 	const rows = $derived.by(() => {
@@ -77,24 +121,36 @@
 		return stop;
 	});
 
-	// Last-24h activity strip for the strip device. Time-series — fetched on
-	// device change, not on a fast poll.
+	// Latest metric snapshot (drive temps / awake state). Dev-independent slow poll;
+	// swallow its errors so a metrics hiccup never clobbers the events view.
 	$effect(() => {
-		const dev = stripDev;
-		if (!dev) {
-			diskPoints = [];
-			return;
-		}
+		return poll(
+			() => api.metricsLatest(),
+			30000,
+			(r) => {
+				metrics = r;
+			},
+			() => {}
+		);
+	});
+
+	// Last-24h activity strip for EVERY rotational disk (small multiples), so all
+	// disks are visible at once — independent of the events filter below.
+	$effect(() => {
+		const devs = rotational.map((d) => d.dev);
+		if (devs.length === 0) return;
 		let cancelled = false;
 		const now = Math.floor(Date.now() / 1000);
-		api
-			.diskSeries(dev, now - 86400, now)
-			.then((r) => {
-				if (!cancelled) diskPoints = r.points;
-			})
-			.catch((e) => {
-				if (!cancelled) error = e;
-			});
+		Promise.all(
+			devs.map((dev) =>
+				api
+					.diskSeries(dev, now - 86400, now)
+					.then((r) => [dev, r.points] as const)
+					.catch(() => [dev, [] as DiskPoint[]] as const)
+			)
+		).then((pairs) => {
+			if (!cancelled) stripSeries = Object.fromEntries(pairs);
+		});
 		return () => {
 			cancelled = true;
 		};
@@ -143,14 +199,52 @@
 	</p>
 
 	<div class="strip-card">
-		<Card title={`Last 24 hours${stripMeta ? ` · ${stripDev}${stripMeta.label ? ` (${stripMeta.label})` : ''}` : ''}`}>
-			{#if !stripDev}
+		<Card title="Disk activity — last 24 h (all disks)">
+			{#if rotational.length === 0}
 				<p class="muted">No rotational disks to show.</p>
 			{:else}
-				<ActivityStrip points={diskPoints} />
+				<div class="strips">
+					{#each rotational as d (d.dev)}
+						<div class="strip-row">
+							<div class="strip-label">
+								<span class="dev tabular">{d.dev}</span>
+								{#if d.label}<span class="lbl muted">{d.label}</span>{/if}
+							</div>
+							<div class="strip-viz"><ActivityStrip points={stripSeries[d.dev] ?? []} /></div>
+						</div>
+					{/each}
+				</div>
 			{/if}
 		</Card>
 	</div>
+
+	{#if rotational.length > 0}
+		<div class="temp-card">
+			<Card title="Drive temperature">
+				{#if !metrics}
+					<p class="muted loading-line">Loading…</p>
+				{:else}
+					<ul class="temps">
+						{#each diskTemps as dt (dt.dev)}
+							<li class="temp-row">
+								<span
+									class="state"
+									class:awake={dt.awake === true}
+									class:asleep={dt.awake === false}
+									aria-hidden="true">{dt.awake === true ? '⟳' : dt.awake === false ? '☾' : '·'}</span
+								>
+								<span class="dev tabular">{dt.dev}</span>
+								{#if dt.label}<span class="lbl muted">{dt.label}</span>{/if}
+								<span class="reading tabular" class:muted={!dt.hasTemp} title={dt.tip}
+									>{dt.reading}</span
+								>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</Card>
+		</div>
+	{/if}
 
 	{#if error && !isUnreachable(error)}
 		<p class="err">Couldn't load events: {error instanceof Error ? error.message : 'unknown error'}</p>
@@ -232,6 +326,84 @@
 
 	.strip-card {
 		margin-bottom: var(--gap);
+	}
+	.strips {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.strip-row {
+		display: grid;
+		grid-template-columns: 150px 1fr;
+		gap: 12px;
+		align-items: center;
+		min-width: 0;
+	}
+	.strip-label {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+	.strip-label .lbl {
+		font-size: 11px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.strip-viz {
+		min-width: 0;
+	}
+	@media (max-width: 520px) {
+		.strip-row {
+			grid-template-columns: 1fr;
+			gap: 4px;
+		}
+	}
+
+	.temp-card {
+		margin-bottom: var(--gap);
+	}
+	.temps {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.temp-row {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		min-width: 0;
+	}
+	.temp-row .state {
+		font-size: 12px;
+		line-height: 1;
+		align-self: center;
+		color: var(--text-muted);
+		flex-shrink: 0;
+	}
+	.temp-row .state.asleep {
+		color: var(--good);
+	}
+	.temp-row .state.awake {
+		color: var(--warning);
+	}
+	.temp-row .lbl {
+		font-size: 12px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.temp-row .reading {
+		margin-left: auto;
+		font-size: 13px;
+		font-weight: 600;
+		white-space: nowrap;
+		flex-shrink: 0;
 	}
 
 	.err {

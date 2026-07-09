@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, ApiError } from '$lib/api';
-	import type { PowerPoint, CStatePoint, PowerEvent } from '$lib/api';
+	import type { PowerPoint, CStatePoint, PowerEvent, MetricsLatest, Metric } from '$lib/api';
 	import { fmtWatts, fmtPct, fmtDateTime } from '$lib/format';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import Card from '$lib/components/Card.svelte';
@@ -23,6 +23,7 @@
 	let coreStates = $state<string[]>([]);
 	let corePoints = $state<CStatePoint[]>([]);
 	let events = $state<PowerEvent[]>([]);
+	let metrics = $state<MetricsLatest | null>(null);
 
 	// ---- series definitions --------------------------------------------------
 	// Package + core watts in fixed slots 0 and 1 (blue, aqua).
@@ -37,6 +38,22 @@
 	// LineChart wants Array<Record<string, number>>; PowerPoint is all-number.
 	const powerChart = $derived(powerPoints as unknown as Array<Record<string, number>>);
 
+	// ---- deep-idle availability ----------------------------------------------
+	// deep_available (num 1/0) is the corrected signal: whether the platform can
+	// enter deep *package* idle at all. On hardware that only exposes a single
+	// deepest state, deep idle isn't "blocked" by a process — it simply isn't
+	// available, and the honest reason travels on the pkg_cstate_stall events.
+	function findMetric(collector: string, key: string): Metric | undefined {
+		if (!metrics) return undefined;
+		for (const g of metrics.groups)
+			for (const m of g.metrics) if (m.collector === collector && m.key === key) return m;
+		return undefined;
+	}
+	const deepMetric = $derived(findMetric('cpu', 'cstates.deep_available'));
+	const deepAvailable = $derived<number | null>(deepMetric?.num ?? null); // 1, 0, or null
+	const deepTxt = $derived(deepMetric?.txt ?? '');
+	const stallEvents = $derived(events.filter((e) => e.kind === 'pkg_cstate_stall'));
+
 	// ---- data load -----------------------------------------------------------
 	async function load() {
 		loading = true;
@@ -46,11 +63,12 @@
 		const from = to - range;
 		const res: 'raw' | 'hour' = range >= 86400 ? 'hour' : 'raw';
 		try {
-			const [pw, pkg, core, ev] = await Promise.all([
+			const [pw, pkg, core, ev, ml] = await Promise.all([
 				api.powerSeries(from, to, res),
 				api.cstateSeries(from, to, 'package', res),
 				api.cstateSeries(from, to, 'core', res),
-				api.powerEvents(0, 100)
+				api.powerEvents(0, 100),
+				api.metricsLatest()
 			]);
 			powerPoints = pw.points;
 			pkgStates = pkg.states;
@@ -58,6 +76,7 @@
 			coreStates = core.states;
 			corePoints = core.points;
 			events = ev.events;
+			metrics = ml;
 		} catch (e) {
 			if (e instanceof ApiError && (e.message === 'not-configured' || e.message === 'unreachable')) {
 				unreachable = true;
@@ -101,6 +120,38 @@
 				<p class="err">Couldn't load power data: {errMsg}</p>
 			</Card>
 		{/if}
+
+		<Card title="Deep idle">
+			{#if loading}
+				<p class="loading muted">Loading…</p>
+			{:else if deepAvailable === 0}
+				<p class="deep deep-unavail">
+					<span class="deep-dot" aria-hidden="true"></span>
+					<span>
+						Deep idle: <strong>UNAVAILABLE</strong> — platform exposes only
+						<code>{'<cpu.cstates.deepest>'}</code> (a BIOS/kernel setting, not a process)
+					</span>
+				</p>
+				{#if deepTxt}<p class="note muted">{deepTxt}</p>{/if}
+				{#if stallEvents.length}
+					<ul class="stalls">
+						{#each stallEvents as ev (ev.id)}
+							<li class="stall">
+								<span class="ts muted tabular">{fmtDateTime(ev.ts)}</span>
+								<span class="reason">{ev.detail || ev.primary_cause}</span>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			{:else if deepAvailable === 1}
+				<p class="deep deep-ok">
+					<span class="deep-dot" aria-hidden="true"></span>
+					<span>Deep idle: reachable — the package can enter deep C‑states.</span>
+				</p>
+			{:else}
+				<p class="muted">Deep-idle availability not reported by the agent.</p>
+			{/if}
+		</Card>
 
 		<Card title="CPU package & core power">
 			{#if loading}
@@ -209,6 +260,59 @@
 		margin: 0;
 		color: var(--critical);
 		font-size: 13px;
+	}
+	.deep {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		margin: 0;
+		font-size: 14px;
+		line-height: 1.5;
+		color: var(--text-primary);
+	}
+	.deep code {
+		font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+		font-size: 12px;
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 1px 5px;
+		white-space: nowrap;
+	}
+	.deep-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 999px;
+		flex-shrink: 0;
+		align-self: center;
+		background: var(--text-muted);
+	}
+	.deep-ok .deep-dot {
+		background: var(--good);
+	}
+	.stalls {
+		list-style: none;
+		margin: 12px 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.stall {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		flex-wrap: wrap;
+		font-size: 12px;
+	}
+	.stall .ts {
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+	.stall .reason {
+		color: var(--text-secondary);
+		line-height: 1.5;
+		min-width: 0;
 	}
 	.events {
 		list-style: none;

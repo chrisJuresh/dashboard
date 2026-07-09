@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, ApiError, type Status, type PowerState } from '$lib/api';
+	import { api, ApiError, type Status, type PowerState, type MetricsLatest, type Metric } from '$lib/api';
 	import { poll, nowStore } from '$lib/stores';
 	import { fmtWatts, fmtGbp, fmtPct, fmtDuration, fmtRelative, diskStateStatus } from '$lib/format';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -14,9 +14,11 @@
 		value: string;
 		sub?: string;
 		status?: TileStatus;
+		tip?: string;
 	}
 
 	let status = $state<Status | null>(null);
+	let metrics = $state<MetricsLatest | null>(null);
 	let error = $state<string | null>(null);
 
 	// Live view: poll the agent snapshot at a slow, near-zero-cost cadence.
@@ -34,6 +36,27 @@
 		);
 	});
 
+	// Latest generic-metric snapshot (deep-idle availability etc.). Errors are
+	// swallowed so a metrics hiccup never masks the main status view.
+	$effect(() => {
+		return poll(
+			() => api.metricsLatest(),
+			20000,
+			(m) => {
+				metrics = m;
+			},
+			() => {}
+		);
+	});
+
+	// Look up a single latest metric by collector + key.
+	function findMetric(collector: string, key: string): Metric | undefined {
+		if (!metrics) return undefined;
+		for (const g of metrics.groups)
+			for (const m of g.metrics) if (m.collector === collector && m.key === key) return m;
+		return undefined;
+	}
+
 	// KPI row — derived straight from the snapshot; recomputed on each poll.
 	const tiles = $derived.by<Tile[] | null>(() => {
 		const s = status;
@@ -43,6 +66,27 @@
 			(d) => d.power_state === 'standby' || d.power_state === 'sleeping'
 		);
 		const topPkg = [...s.cpu.pkg_cstates].sort((a, b) => b.pct - a.pct)[0];
+		// Corrected attribution: when the platform can't enter deep package idle at
+		// all (BIOS/kernel exposes only a single deepest state), that's "unavailable",
+		// not "blocked" — no process is at fault, so it reads neutral/muted.
+		const deep = findMetric('cpu', 'cstates.deep_available');
+		const deepTile: Tile =
+			deep?.num === 0
+				? {
+						label: 'Deep idle',
+						value: 'unavailable (BIOS)',
+						sub: 'no deep package C‑states',
+						status: 'muted',
+						tip:
+							deep.txt ||
+							'The platform exposes only cpu.cstates.deepest — a BIOS/kernel setting, not a process. Deep package idle cannot be entered on this hardware.'
+					}
+				: {
+						label: 'Deep idle',
+						value: s.cpu.pkg_deep_ok ? 'reaching' : 'blocked',
+						sub: topPkg ? `${topPkg.name} ${fmtPct(topPkg.pct)}` : 'package C‑states',
+						status: s.cpu.pkg_deep_ok ? 'good' : 'serious'
+					};
 		return [
 			{
 				label: 'Package power',
@@ -50,12 +94,7 @@
 				sub: `core ${fmtWatts(s.cpu.core_w)} · busy ${fmtPct(s.cpu.busy_pct)}`,
 				status: s.cpu.pkg_w < 6 ? 'good' : 'warning'
 			},
-			{
-				label: 'Deep idle',
-				value: s.cpu.pkg_deep_ok ? 'reaching' : 'blocked',
-				sub: topPkg ? `${topPkg.name} ${fmtPct(topPkg.pct)}` : 'package C‑states',
-				status: s.cpu.pkg_deep_ok ? 'good' : 'serious'
-			},
+			deepTile,
 			{
 				label: 'HDDs asleep',
 				value: `${asleep.length} / ${rot.length}`,
@@ -115,7 +154,7 @@
 	{#if status}
 		<div class="tiles">
 			{#each tiles ?? [] as t (t.label)}
-				<div class="card">
+				<div class="card" title={t.tip}>
 					<StatTile label={t.label} value={t.value} sub={t.sub} status={t.status} />
 				</div>
 			{/each}

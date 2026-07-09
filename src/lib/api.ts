@@ -161,6 +161,32 @@ export interface ConfigView {
 	}[];
 }
 
+// ---- metrics (generic collector output) ------------------------------------
+export interface Metric {
+	collector: string;
+	key: string;
+	num: number | null;
+	txt: string | null;
+	unit: string;
+	ts: number;
+}
+export interface MetricGroup {
+	group: string;
+	metrics: Metric[];
+}
+export interface MetricsLatest {
+	ts: number;
+	groups: MetricGroup[];
+}
+export interface MetricSeriesPoint {
+	ts: number;
+	num: number;
+}
+export interface MetricSeries {
+	key: string;
+	points: MetricSeriesPoint[];
+}
+
 // ---- endpoints -------------------------------------------------------------
 export const api = {
 	health: () => req<{ ok: boolean; version: string; ts: number; mode: Mode }>('/api/health'),
@@ -189,6 +215,12 @@ export const api = {
 			`/api/overhead?from=${from}&to=${to}`
 		),
 	config: () => req<ConfigView>('/api/config'),
+	// generic metrics feed (latest snapshot grouped for display)
+	metricsLatest: () => req<MetricsLatest>('/api/metrics/latest'),
+	metricSeries: (key: string, from: number, to: number, res: 'raw' | 'hour' = 'raw') =>
+		req<MetricSeries>(
+			`/api/metrics/series?key=${encodeURIComponent(key)}&from=${from}&to=${to}&res=${res}`
+		),
 	// diagnostic (explicit, gated)
 	diagStart: (body: { tool: string; seconds: number; dev?: string; confirm_wake?: boolean }) =>
 		req<{ session_id: string }>('/api/diag/start', {
