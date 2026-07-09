@@ -68,6 +68,16 @@ def _read_io(pid: int) -> tuple[int, int]:
     return (read_bytes, write_bytes)
 
 
+def read_cmdline(pid: int, limit: int = 120) -> str:
+    """Full command line of a pid (NUL-separated in /proc), space-joined and
+    truncated. Falls back to '' — never raises."""
+    raw = util.read_text(f"/proc/{pid}/cmdline")
+    if not raw:
+        return ""
+    cmd = raw.replace("\x00", " ").strip()
+    return (cmd[:limit] + "…") if len(cmd) > limit else cmd
+
+
 def _read_cgroup_path(pid: int) -> str:
     for line in util.read_text(f"/proc/{pid}/cgroup").splitlines():
         # cgroup v2: "0::/system.slice/docker-<id>.scope"

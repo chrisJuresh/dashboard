@@ -30,6 +30,7 @@
 	};
 
 	const TOOLS: ToolMeta[] = [
+		{ id: 'audit', label: 'wake audit (auditd)', desc: 'Which processes open the raw disk devices (SMART/smartctl/dd) or browse/scan the mount roots — the invisible wakes block-I/O tracing misses. No device needed. (For deep per-file reads, use ext4slower/biosnoop.)', dev: false, wakes: false },
 		{ id: 'biosnoop', label: 'biosnoop', desc: 'Trace block I/O with the issuing process (eBPF). System-wide.', dev: false, wakes: false },
 		{ id: 'ext4slower', label: 'ext4slower', desc: 'Slow ext4 operations attributed to a process (eBPF).', dev: false, wakes: false },
 		{ id: 'bpftrace_bio', label: 'bpftrace bio', desc: 'Block-I/O latency and counts via a bpftrace one-liner.', dev: false, wakes: false },

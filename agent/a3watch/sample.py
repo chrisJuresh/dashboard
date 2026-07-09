@@ -129,6 +129,11 @@ def _cycle(cfg: Config, conn, ts: float, boot: str, m0: float, ru0) -> dict:
         unit_fires = _safe(lambda: _read_unit_fires(dt), [])
 
         cpu_top = sorted(pdelta, key=lambda p: p["cpu_pct"], reverse=True)[:8]
+        # enrich with a human-meaningful identity: container/service + command line,
+        # so a PID on the dashboard says *what* it is rather than just a number
+        for t in cpu_top:
+            t["cgroup_name"] = procs.friendly_cgroup_name(t.get("cgroup", ""), name_map)
+            t["cmdline"] = procs.read_cmdline(t["pid"])
         window = {
             "ts": ts,
             "dt": dt,

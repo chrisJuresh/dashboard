@@ -251,6 +251,9 @@ def attribute_power(window: dict, prev_pkg_w: Optional[float]) -> list[dict]:
     busy = cpu.get("busy_pct", 0.0)
     top = sorted(window.get("cpu_top", []), key=lambda t: t.get("cpu_pct", 0), reverse=True)
 
+    detail_ctx = _top_detail(top)
+    ctx = f" — {detail_ctx}" if detail_ctx else ""
+
     # wattage rise
     if pkg_w is not None and prev_pkg_w is not None and (pkg_w - prev_pkg_w) >= 1.0:
         cause, conf = _top_cause(top, busy)
@@ -260,7 +263,7 @@ def attribute_power(window: dict, prev_pkg_w: Optional[float]) -> list[dict]:
                 "confidence": conf,
                 "primary_cause": cause,
                 "detail": f"package power {prev_pkg_w:.1f}W → {pkg_w:.1f}W; "
-                f"CPU busy {busy:.0f}%.",
+                f"CPU busy {busy:.0f}%.{ctx}",
             }
         )
 
@@ -277,10 +280,36 @@ def attribute_power(window: dict, prev_pkg_w: Optional[float]) -> list[dict]:
                 "detail": f"system is {busy:.0f}% busy yet deep package C-states "
                 f"(PC6/8/10) are ~0%; something keeps the package awake. "
                 "Attribution of package-C-state blockers is inherently approximate "
-                "(many small wakeups from timers/IRQs/containers).",
+                f"(many small wakeups from timers/IRQs/containers).{ctx}",
             }
         )
     return events
+
+
+def _describe(t: dict) -> str:
+    """A PID rendered as something meaningful: comm (pid) [in container/service]."""
+    who = f"{t.get('comm', '?')} (pid {t.get('pid', '?')})"
+    cg = t.get("cgroup_name") or ""
+    if cg and cg not in ("root", "", "/"):
+        who += f" in {cg}"
+    return who
+
+
+def _top_detail(top: list[dict]) -> str:
+    """One-line context for the leading non-kernel CPU user: what it actually is."""
+    nonkernel = [t for t in top if not _is_kernel(t.get("comm", ""))]
+    if not nonkernel:
+        return ""
+    lead = nonkernel[0]
+    parts = [f"top: {lead.get('comm', '?')} (pid {lead.get('pid', '?')}, "
+             f"{lead.get('cpu_pct', 0.0):.0f}% CPU)"]
+    cg = lead.get("cgroup_name") or ""
+    if cg and cg not in ("root", "", "/"):
+        parts.append(f"in {cg}")
+    cmd = lead.get("cmdline") or ""
+    if cmd:
+        parts.append(f"cmd: {cmd}")
+    return " · ".join(parts)
 
 
 def _top_cause(top: list[dict], busy: float) -> tuple[str, str]:
@@ -290,6 +319,6 @@ def _top_cause(top: list[dict], busy: float) -> tuple[str, str]:
     lead = nonkernel[0]
     share = lead.get("cpu_pct", 0.0)
     if len(nonkernel) == 1 or share >= max(1.0, 0.6 * busy * 1.0):
-        return (f"{lead['comm']} (pid {lead['pid']})", "medium")
+        return (_describe(lead), "medium")
     names = ", ".join(f"{t['comm']}" for t in nonkernel[:3])
     return (names, "low")

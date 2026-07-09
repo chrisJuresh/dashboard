@@ -159,7 +159,7 @@ def cmd_install(args) -> int:
     print(f"  interval : {cfg.interval_s}s")
     print(f"  API      : {cfg.api_bind}:{cfg.api_port}")
     print(f"  units    : {', '.join(units)}")
-    print(f"  diag pkgs: bpfcc-tools, bpftrace, blktrace (installed, dormant until diagnostic mode)")
+    print(f"  diag pkgs: bpfcc-tools, bpftrace, blktrace, auditd (installed, dormant until diagnostic mode)")
     if not args.confirm:
         print("\nRe-run with --confirm to apply. Nothing changed.")
         return 0
@@ -178,7 +178,7 @@ def cmd_install(args) -> int:
         print(f"  generated API token at {cfg.token_path}")
 
     if args.with_diag:
-        _apt_install(["bpfcc-tools", "bpftrace", "blktrace"])
+        _apt_install(["bpfcc-tools", "bpftrace", "blktrace", "auditd"])
 
     for name, body in units.items():
         path = f"/etc/systemd/system/{name}"
@@ -338,8 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="print a live non-waking snapshot").set_defaults(func=cmd_status)
 
     dg = sub.add_parser("diag", help="run a time-boxed diagnostic session")
-    dg.add_argument("tool", choices=["biosnoop", "ext4slower", "bpftrace_bio", "blktrace",
-                                     "turbostat", "powertop", "smart"])
+    dg.add_argument("tool", choices=["audit", "biosnoop", "ext4slower", "bpftrace_bio",
+                                     "blktrace", "turbostat", "powertop", "smart"])
     dg.add_argument("--seconds", type=int, default=15)
     dg.add_argument("--dev")
     dg.add_argument("--confirm-wake", dest="confirm_wake", action="store_true",

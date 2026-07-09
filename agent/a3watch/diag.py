@@ -91,6 +91,74 @@ def _build(tool: str, seconds: int, dev: str | None, confirm_wake: bool) -> tupl
     raise DiagError(f"unknown tool: {tool}")
 
 
+_AUDIT_KEY = "a3watch_wake"
+
+
+def _audit_targets(cfg: Config) -> tuple[list[str], list[str]]:
+    """(mount subtrees, device nodes) of monitored rotational disks that are
+    currently mounted / present. Resolving these paths is a stat only — it does
+    not open a block device, so arming the audit does not wake a disk."""
+    mounts, devices = [], []
+    for d in cfg.disks:
+        if not (d.rotational and d.monitored):
+            continue
+        node = f"/dev/{d.dev}"
+        if os.path.exists(node):
+            devices.append(node)
+        if d.mount and os.path.ismount(d.mount):
+            mounts.append(d.mount)
+    return mounts, devices
+
+
+def _build_audit(cfg: Config, seconds: int) -> tuple[list[str], bool]:
+    """Time-boxed auditd capture of file/device access to the monitored HDDs.
+    Reveals the process behind a wake at the *syscall* level — including SMB/NFS
+    serving and metadata access that leaves little or no block I/O for the
+    cheap always-on signals to see."""
+    seconds = max(5, min(seconds, 300))
+    for b in ("auditctl", "ausearch"):
+        if not util.have_cmd(b):
+            raise DiagError(f"{b} not found — install the 'auditd' package")
+    rc, out, _ = util.run_cmd(["systemctl", "is-active", "auditd"], timeout=5.0)
+    if out.strip() != "active":
+        raise DiagError("auditd is not running (start it: sudo systemctl start auditd)")
+    mounts, devices = _audit_targets(cfg)
+    if not mounts and not devices:
+        raise DiagError("no monitored, mounted rotational disks to audit")
+    # syscall rules (not -w watches) → each deletes precisely with -d; we NEVER
+    # use -D, so any pre-existing audit rules (e.g. a3-wake-audit-rules) are untouched.
+    specs = [f"-F dir={m} -F perm=rwa" for m in mounts]
+    specs += [f"-F path={n} -F perm=rwa" for n in devices]
+    add = "\n".join(f'auditctl -a always,exit {s} -k {_AUDIT_KEY} 2>/dev/null' for s in specs)
+    dele = "\n".join(f'auditctl -d always,exit {s} -k {_AUDIT_KEY} 2>/dev/null' for s in specs)
+    script = f"""set -u
+cleanup() {{
+{dele}
+}}
+trap cleanup EXIT INT TERM
+{dele}
+{add}
+echo "# a3watch wake-audit — {seconds}s"
+echo "# device-node opens (catches SMART/smartctl/dd raw-device access): {', '.join(devices) or '(none)'}"
+echo "# directory-level access at mount roots (listings/browse/creates): {', '.join(mounts) or '(none)'}"
+echo "# For deep per-file reads, use the ext4slower / biosnoop (eBPF) tools instead."
+echo "# NOTE: 'comm=hdparm' entries are a3watch's own non-waking power-state check — ignore them."
+echo
+sleep {seconds}
+echo "=== processes that accessed these disks (by access count) ==="
+ausearch -k {_AUDIT_KEY} -ts recent -i 2>/dev/null | grep '^type=SYSCALL' | grep -vE 'syscall=sendto|comm=(auditctl|auditd|hdparm)' | grep -oE 'comm=[^ ]+' | sed 's/comm=//;s/\"//g' | sort | uniq -c | sort -rn | head -25
+echo
+echo "=== files / devices touched (count : path) ==="
+ausearch -k {_AUDIT_KEY} -ts recent -i 2>/dev/null | grep '^type=PATH' | grep -oE 'name=[^ ]+' | sed 's/name=//;s/\"//g' | grep -E '^/mnt/|^/dev/sd' | sort | uniq -c | sort -rn | head -50
+echo
+echo "# If both lists are empty, nothing touched these disks during the window —"
+echo "# they are staying spun up on their own (e.g. no spindown timer set), not being"
+echo "# woken by ongoing access. Run a longer window to catch periodic (SMB/scan) access."
+"""
+    # timeout sends SIGTERM past a hard deadline so the trap cleanup always runs
+    return (["timeout", "--signal=TERM", str(seconds + 25), "bash", "-lc", script], False)
+
+
 def _diag_dir(cfg: Config) -> str:
     os.makedirs(cfg.diag_dir, exist_ok=True)
     return cfg.diag_dir
@@ -106,7 +174,10 @@ def _out_path(cfg: Config, sid: str) -> str:
 
 def start(cfg: Config, tool: str, seconds: int, dev: str | None, confirm_wake: bool) -> str:
     _diag_dir(cfg)
-    argv, wakes = _build(tool, seconds, dev, confirm_wake)
+    if tool == "audit":
+        argv, wakes = _build_audit(cfg, seconds)
+    else:
+        argv, wakes = _build(tool, seconds, dev, confirm_wake)
     sid = f"{int(time.time())}-{os.urandom(3).hex()}"
     out = _out_path(cfg, sid)
     started = time.time()
