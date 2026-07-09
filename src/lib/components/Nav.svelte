@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { theme, toggleTheme, poll } from '$lib/stores';
-	import { api, isConfigured, type Mode } from '$lib/api';
+	import { api, type Mode } from '$lib/api';
 
 	const links = [
 		{ href: '/', label: 'Overview' },
@@ -13,23 +13,17 @@
 		{ href: '/settings', label: 'Settings' }
 	];
 
-	type Conn = 'connected' | 'unreachable' | 'unconfigured';
+	type Conn = 'connected' | 'unreachable';
 
-	let conn = $state<Conn>(isConfigured() ? 'unreachable' : 'unconfigured');
+	let conn = $state<Conn>('unreachable');
 	let mode = $state<Mode | null>(null);
 
 	const connMeta: Record<Conn, { color: string; label: string }> = {
 		connected: { color: 'var(--good)', label: 'connected' },
-		unreachable: { color: 'var(--critical)', label: 'unreachable' },
-		unconfigured: { color: 'var(--text-muted)', label: 'not configured' }
+		unreachable: { color: 'var(--critical)', label: 'unreachable' }
 	};
 
 	$effect(() => {
-		if (!isConfigured()) {
-			conn = 'unconfigured';
-			mode = null;
-			return;
-		}
 		// poll() fires immediately on start, then every 30s while the tab is visible.
 		return poll(
 			() => api.health(),
@@ -83,6 +77,9 @@
 		<button class="theme" type="button" onclick={toggleTheme} aria-label="Toggle theme">
 			{$theme === 'dark' ? '☾' : '☀'}
 		</button>
+
+		<!-- Cloudflare Access logout (served on this hostname by the CF edge) -->
+		<a class="logout" href="/cdn-cgi/access/logout" title="Sign out">Log out</a>
 	</div>
 </nav>
 
@@ -185,6 +182,18 @@
 	}
 	.theme:hover {
 		border-color: var(--axis);
+	}
+	.logout {
+		font-size: 12px;
+		color: var(--text-secondary);
+		padding: 4px 8px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border);
+	}
+	.logout:hover {
+		color: var(--text-primary);
+		background: var(--surface-2);
+		text-decoration: none;
 	}
 	@media (max-width: 640px) {
 		.conn-label {

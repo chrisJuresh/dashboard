@@ -34,13 +34,12 @@ asleep*. a3watch is the opposite:
 ## Architecture
 
 ```
- systemd timer (20s)                    cloudflared tunnel
-        │                                       │
-        ▼                                        ▼
-  a3watch sample  ──►  SQLite (WAL) on NVMe  ◄── a3watch API (socket-activated, read-only)
-  (Python, root,       /var/lib/a3watch           │  bearer-token + CORS
-   short-lived)                                     ▼
-                                          SvelteKit SPA (static, hosted on Vercel)
+ systemd timer (20s)                         Cloudflare Access (SSO login)
+        │                                              │
+        ▼                                               ▼
+  a3watch sample  ──►  SQLite (WAL) on NVMe  ◄──  a3watch API + SPA (socket-activated)
+  (Python, root,       /var/lib/a3watch            served over your cloudflared tunnel
+   short-lived)                                    at https://a3.chrisj.uk
 ```
 
 - **Collector** (`agent/a3watch`): reads `/proc`, `/sys`, RAPL energy, package
@@ -48,12 +47,14 @@ asleep*. a3watch is the opposite:
   vs. the previous cycle; runs attribution; appends to SQLite. **All data lives on
   the NVMe/SSD** (`/var/lib/a3watch`); the installer refuses a data dir backed by a
   rotational disk.
-- **API** (`a3watch serve`): stdlib HTTP, read-only `SELECT`s, bearer auth, CORS
-  limited to your Vercel origin, exposed to the internet only via your existing
-  **cloudflared** tunnel.
-- **Dashboard** (`src/`): a static SvelteKit SPA built and hosted by Vercel. Your
-  browser loads it from Vercel and reads the agent's API over the tunnel — so
-  **no data leaves the server except the query results you request**.
+- **API + web** (`a3watch serve`): stdlib HTTP, socket-activated, read-only
+  `SELECT`s. It serves the built SPA **and** its JSON API from one origin over your
+  existing **cloudflared** tunnel. Auth is **Cloudflare Access** (SSO): the agent
+  verifies the signed Access login token (a bearer token remains for direct/CLI use).
+- **Dashboard** (`src/`): a static SvelteKit SPA (adapter-static) built locally and
+  deployed into the agent's web dir on NVMe. Because UI + API share one origin
+  behind Access, there's no CORS and nothing to enter — you log in via Cloudflare
+  and land on the stats. (Not hosted on Vercel.)
 
 ## Safety guarantees (enforced in code, verified on-box)
 
@@ -78,16 +79,17 @@ asleep*. a3watch is the opposite:
 sudo ./agent/install.sh
 
 # 2) REVIEW the generated config — roles, which drives are 'protected', interval,
-#    data dir, [api].allow_origins (your Vercel URL), tunnel hostname:
+#    data dir, tunnel hostname:
 sudoedit /etc/a3watch/config.toml
 
 # 3) apply: create data dir + systemd timer/socket, install (dormant) diagnostic tools
 sudo a3watch install --confirm
 ```
 
-Then expose the API through your cloudflared tunnel (the installer prints the exact
-ingress snippet and your bearer token), add your Vercel URL to `allow_origins`, and
-enter the API URL + token once on the dashboard's connect screen.
+Then serve the built SPA from the agent, route your cloudflared tunnel hostname to
+`http://<host>:8787`, and put the hostname behind **Cloudflare Access** (set
+`[access] team_domain` + `aud` in the config). You then visit the hostname, log in
+via Cloudflare, and see the stats — no URL or token to enter.
 
 Handy commands: `a3watch status` (live, non-waking snapshot), `a3watch detect`
 (re-detect), `sudo a3watch uninstall --confirm` (remove everything).

@@ -1,14 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import {
-		api,
-		ApiError,
-		getApiBase,
-		getToken,
-		isConfigured,
-		clearConnection,
-		type ConfigView
-	} from '$lib/api';
+	import { api, ApiError, type ConfigView } from '$lib/api';
 	import { theme, toggleTheme } from '$lib/stores';
 	import { fmtGbp } from '$lib/format';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -17,22 +9,18 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 
-	type ErrKind = 'not-configured' | 'unreachable' | 'error';
+	type ErrKind = 'unreachable' | 'error';
 
 	let config = $state<ConfigView | null>(null);
 	let loading = $state(true);
 	let errKind = $state<ErrKind | null>(null);
 	let errMsg = $state('');
-
-	// Local-only connection details (read from localStorage, never the network).
-	let apiBase = $state('');
-	let hasToken = $state(false);
-	let configured = $state(false);
+	let email = $state<string | null>(null);
 
 	function friendly(err: unknown): string {
 		if (err instanceof ApiError) {
 			if (err.status === 401 || err.status === 403)
-				return 'Unauthorized — the stored bearer token was rejected by the agent.';
+				return 'Unauthorized — your Cloudflare Access session may have expired; reload to sign in again.';
 			return err.message || `Request failed (${err.status}).`;
 		}
 		return err instanceof Error ? err.message : 'Failed to load configuration.';
@@ -46,28 +34,23 @@
 			config = await api.config();
 		} catch (err) {
 			config = null;
-			if (err instanceof ApiError && err.message === 'not-configured') errKind = 'not-configured';
-			else if (err instanceof ApiError && err.message === 'unreachable') errKind = 'unreachable';
-			else errKind = 'error';
+			errKind = err instanceof ApiError && err.message === 'unreachable' ? 'unreachable' : 'error';
 			errMsg = friendly(err);
 		} finally {
 			loading = false;
 		}
 	}
 
-	function disconnect() {
-		clearConnection();
-		window.location.reload();
-	}
-
 	function diskType(rotational: boolean): string {
 		return rotational ? 'HDD (rotational)' : 'SSD / NVMe';
 	}
 
-	onMount(() => {
-		apiBase = getApiBase();
-		hasToken = getToken() !== '';
-		configured = isConfigured();
+	onMount(async () => {
+		try {
+			email = (await api.session()).email;
+		} catch {
+			/* ignore — informational only */
+		}
 		loadConfig();
 	});
 </script>
@@ -79,34 +62,24 @@
 
 <div class="stack">
 	<div class="cols">
-		<Card title="Connection">
+		<Card title="Session">
 			<dl class="kv">
 				<div class="row">
-					<dt>API base</dt>
-					<dd><code class="tabular">{apiBase || '—'}</code></dd>
+					<dt>Signed in as</dt>
+					<dd>{email || '—'}</dd>
 				</div>
 				<div class="row">
-					<dt>Bearer token</dt>
-					<dd>
-						{#if hasToken}
-							<span class="mask">•••••••• <span class="muted">stored locally</span></span>
-						{:else}
-							<span class="muted">not set</span>
-						{/if}
-					</dd>
+					<dt>Access gate</dt>
+					<dd>Cloudflare Access</dd>
 				</div>
 			</dl>
 
 			<p class="note muted">
-				The API URL and bearer token are kept only in this browser (localStorage) and are sent
-				nowhere except directly to your agent over the tunnel.
+				Who can open this dashboard is controlled by your Cloudflare Access policy. Signing out
+				ends your Cloudflare login session for this site.
 			</p>
 
-			{#if configured}
-				<button type="button" class="btn danger" onclick={disconnect}>Disconnect</button>
-			{:else}
-				<button type="button" class="btn" disabled>Not connected</button>
-			{/if}
+			<a class="btn danger" href="/cdn-cgi/access/logout">Log out</a>
 		</Card>
 
 		<Card title="Appearance">
@@ -127,18 +100,11 @@
 		<Card title="Configuration">
 			<p class="muted">Loading configuration…</p>
 		</Card>
-	{:else if errKind === 'not-configured'}
-		<Card title="Configuration">
-			<EmptyState
-				title="Agent not configured"
-				message="No agent connection is set — expected on the public dashboard. Add your agent URL and bearer token to connect."
-			/>
-		</Card>
 	{:else if errKind === 'unreachable'}
 		<Card title="Configuration">
 			<EmptyState
 				title="Agent unreachable"
-				message="Couldn't reach the a3watch agent. If you're viewing this on Vercel, the cloudflared tunnel is likely down — this is the normal state without an active tunnel."
+				message="Couldn't reach the a3watch agent behind the tunnel. Check that the agent and cloudflared are running on the server."
 			/>
 		</Card>
 	{:else if errKind === 'error' || !config}
@@ -270,9 +236,6 @@
 	.cap {
 		text-transform: capitalize;
 	}
-	.mask {
-		letter-spacing: 0.1em;
-	}
 
 	code {
 		font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
@@ -341,12 +304,16 @@
 	}
 
 	.btn {
+		display: inline-block;
 		padding: 8px 14px;
 		border-radius: var(--radius-sm);
 		border: 1px solid var(--border);
 		background: var(--surface-2);
 		color: var(--text-primary);
 		font-weight: 600;
+	}
+	.btn.danger:hover {
+		text-decoration: none;
 	}
 	.btn:hover:not(:disabled) {
 		border-color: var(--axis);

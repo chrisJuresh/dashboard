@@ -1,56 +1,10 @@
 /*
- * a3watch API client. The dashboard is a static SPA served by Vercel; it talks
- * to the a3watch agent running on the server, reached over the cloudflared
- * tunnel. The API base URL + bearer token are entered once on the connect
- * screen and kept in localStorage. Every call is read-only except the
- * explicit /diag/* endpoints.
+ * a3watch API client. The dashboard is served by the agent itself, behind
+ * Cloudflare Access, so every call is a same-origin relative fetch — Cloudflare
+ * handles login (its session cookie rides along automatically) and the agent
+ * verifies the Access token. No API URL or bearer token in the browser.
+ * Every call is read-only except the explicit /diag/* endpoints.
  */
-
-const LS_BASE = 'a3watch.apiBase';
-const LS_TOKEN = 'a3watch.token';
-
-// Build-time defaults for zero-entry auto-connect (optional, set as Vercel env vars).
-// The URL is not secret. VITE_A3WATCH_TOKEN is inlined into the client bundle, so only
-// set it when the deployment is protected by Vercel Authentication — otherwise anyone
-// who loads the site can read it. Precedence: localStorage (user-set) > env > default.
-const ENV_BASE = (import.meta.env.VITE_A3WATCH_API ?? '').replace(/\/+$/, '');
-const ENV_TOKEN = import.meta.env.VITE_A3WATCH_TOKEN ?? '';
-// Default is SAME-ORIGIN (''): the agent serves this SPA and its /api behind Cloudflare
-// Access, so no URL or token is entered — Access handles login and the API is relative.
-// An absolute base (env var or the connect screen) switches to remote/bearer-token mode.
-const DEFAULT_BASE = '';
-
-export function getApiBase(): string {
-	if (typeof localStorage !== 'undefined') {
-		const v = localStorage.getItem(LS_BASE);
-		if (v) return v;
-	}
-	return ENV_BASE || DEFAULT_BASE;
-}
-export function getToken(): string {
-	if (typeof localStorage !== 'undefined') {
-		const v = localStorage.getItem(LS_TOKEN);
-		if (v) return v;
-	}
-	return ENV_TOKEN;
-}
-/** True when calls hit the same origin (served by the agent behind Cloudflare Access). */
-export function isSameOrigin(): boolean {
-	return getApiBase() === '';
-}
-export function setConnection(base: string, token: string): void {
-	localStorage.setItem(LS_BASE, base.replace(/\/+$/, ''));
-	localStorage.setItem(LS_TOKEN, token);
-}
-export function clearConnection(): void {
-	localStorage.removeItem(LS_BASE);
-	localStorage.removeItem(LS_TOKEN);
-}
-// Same-origin mode is always "configured" (Cloudflare Access gates it, no token needed).
-// Remote mode needs a bearer token; otherwise show the connect screen.
-export function isConfigured(): boolean {
-	return isSameOrigin() || getToken() !== '';
-}
 
 export class ApiError extends Error {
 	status: number;
@@ -61,15 +15,11 @@ export class ApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-	// base is '' in same-origin mode → a relative fetch to the agent that served
-	// this page (gated by Cloudflare Access). An absolute base = remote/bearer mode.
-	const base = getApiBase();
-	const headers = new Headers(init?.headers);
-	const token = getToken();
-	if (token) headers.set('Authorization', `Bearer ${token}`);
+	// Relative, same-origin: the agent served this page; the Cloudflare Access
+	// cookie is sent automatically and the edge injects the verified login token.
 	let resp: Response;
 	try {
-		resp = await fetch(`${base}${path}`, { ...init, headers });
+		resp = await fetch(path, { credentials: 'same-origin', ...init });
 	} catch (e) {
 		throw new ApiError(0, 'unreachable');
 	}
@@ -214,16 +164,8 @@ export interface ConfigView {
 // ---- endpoints -------------------------------------------------------------
 export const api = {
 	health: () => req<{ ok: boolean; version: string; ts: number; mode: Mode }>('/api/health'),
-	// self-hosted login (same-origin mode)
-	session: () =>
-		req<{ authenticated: boolean; email: string | null; login_configured: boolean }>('/api/session'),
-	login: (email: string, password: string) =>
-		req<{ ok: boolean }>('/api/login', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ email, password })
-		}),
-	logout: () => req<{ ok: boolean }>('/api/logout', { method: 'POST' }),
+	// who is signed in (via Cloudflare Access); informational only
+	session: () => req<{ authenticated: boolean; email: string | null }>('/api/session'),
 	status: () => req<Status>('/api/status'),
 	diskEvents: (since = 0, limit = 200, dev = '') =>
 		req<{ events: DiskEvent[] }>(
