@@ -71,26 +71,25 @@ def _rl_reset(ip: str) -> None:
     _login_fails.pop(ip, None)
 
 
-def verify_cf_access(assertion: str, team_domain: str, aud: str) -> bool:
-    """True iff `assertion` is a valid Cloudflare Access JWT for this team + app.
+def verify_cf_access(assertion: str, team_domain: str, aud: str):
+    """Return the decoded Cloudflare Access JWT claims (a dict) if valid, else None.
     Cloudflare injects the Cf-Access-Jwt-Assertion header on requests it has
     authenticated; verifying its signature/aud/issuer proves the caller passed
     the Access login (and can't be forged by, e.g., a sibling container)."""
     if not (jwt and assertion and team_domain and aud):
-        return False
+        return None
     try:
         client = _cf_jwks.get(team_domain)
         if client is None:
             client = jwt.PyJWKClient(f"https://{team_domain}/cdn-cgi/access/certs")
             _cf_jwks[team_domain] = client
         signing_key = client.get_signing_key_from_jwt(assertion)
-        jwt.decode(
+        return jwt.decode(
             assertion, signing_key.key, algorithms=["RS256"],
             audience=aud, issuer=f"https://{team_domain}",
         )
-        return True
     except Exception:
-        return False
+        return None
 
 
 def _ro_conn(cfg: Config) -> sqlite3.Connection:
@@ -352,6 +351,11 @@ def make_handler(cfg: Config, token: str):
                                         "mode": "diagnostic" if diag.is_running(cfg) else "normal"})
             if path == "/api/session":  # public: lets the SPA decide login vs dashboard
                 email = self._session_email()
+                if not email and cfg.cf_access_enabled:
+                    claims = verify_cf_access(self.headers.get("Cf-Access-Jwt-Assertion", ""),
+                                              cfg.cf_access_team_domain, cfg.cf_access_aud)
+                    if claims:  # authenticated at the Cloudflare edge — no second login
+                        email = claims.get("email") or "authenticated"
                 return self._send(200, {"authenticated": bool(email), "email": email,
                                         "login_configured": auth.login_configured(cfg)})
             if not path.startswith("/api/"):
