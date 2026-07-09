@@ -77,6 +77,32 @@ def _build_spinup(window: dict, dev: str, dc, d: dict) -> dict:
                 "weight": 1.0,
             }
         )
+    # extra per-wake context
+    io_ms = d.get("io_ms", 0)
+    if io_ms:
+        evidence.append({"signal": "io_latency",
+                         "detail": f"device had I/O in flight {io_ms} ms this cycle", "weight": 0.3})
+    wb = window.get("writeback_kb", 0)
+    dirty = window.get("dirty_kb", 0)
+    if writes and (wb or dirty > 4096):
+        evidence.append({"signal": "writeback",
+                         "detail": f"kernel dirty={dirty // 1024} MB, writeback={wb // 1024} MB — "
+                         "this write may be a deferred page-cache flush (origin wrote earlier)",
+                         "weight": 0.4})
+    psi = window.get("psi_io", "")
+    some = next((ln for ln in psi.splitlines() if ln.startswith("some")), "")
+    if some:
+        evidence.append({"signal": "io_pressure", "detail": f"PSI io {some}", "weight": 0.2})
+    sd = window.get("spindown", {}).get(dev)
+    if sd is None:
+        evidence.append({"signal": "spindown",
+                         "detail": f"{dev} has no spindown timer configured (stays awake once woken)",
+                         "weight": 0.2})
+    elif sd == 0:
+        evidence.append({"signal": "spindown", "detail": f"{dev} spindown is disabled", "weight": 0.2})
+    else:
+        evidence.append({"signal": "spindown",
+                         "detail": f"{dev} spindown timer is {sd:.0f} min", "weight": 0.2})
 
     # --- per-device container attribution (block-level, strong) ---
     cg_hits = [c for c in window["cgroup_io"] if c["dev"] == maj_min]
@@ -205,14 +231,16 @@ def _score_spinup(
     )
 
 
-def attribute_stay_awake(window: dict, dev: str, dc, awake_minutes: float) -> dict:
-    """A rotational disk that has stayed out of standby with little/no I/O."""
+def attribute_stay_awake(window: dict, dev: str, dc, awake_minutes: float, timer_min: float) -> dict:
+    """Only called for a disk that HAS a spindown timer but has stayed awake well
+    past it — a genuine 'its idle timer keeps getting reset' anomaly."""
     maj_min = dc.maj_min or ""
     cg_hits = [c for c in window["cgroup_io"] if c["dev"] == maj_min]
     evidence = [
         {
             "signal": "state",
-            "detail": f"{dev} awake for ~{awake_minutes:.0f} min without entering standby",
+            "detail": f"{dev} has a {timer_min:.0f}-min spindown timer but has been awake "
+            f"~{awake_minutes:.0f} min without sleeping — its idle timer is being reset",
             "weight": 1.0,
         }
     ]
@@ -220,25 +248,23 @@ def attribute_stay_awake(window: dict, dev: str, dc, awake_minutes: float) -> di
         cg_hits.sort(key=lambda c: c["rbytes_d"] + c["wbytes_d"], reverse=True)
         top = cg_hits[0]
         evidence.append(
-            {"signal": "cgroup_io", "detail": f"recent I/O from {top['name']}", "weight": 0.8}
+            {"signal": "cgroup_io", "detail": f"recent block I/O to {dev} from {top['name']}",
+             "weight": 0.8}
         )
         return {
-            "dev": dev,
-            "kind": "stay_awake",
-            "confidence": "medium",
-            "primary_cause": top["name"],
-            "cause_kind": "container",
-            "note": "recurring small I/O keeps this disk from spinning down.",
+            "dev": dev, "kind": "stay_awake", "confidence": "medium",
+            "primary_cause": top["name"], "cause_kind": "container",
+            "note": f"recurring I/O from {top['name']} keeps resetting {dev}'s "
+            f"{timer_min:.0f}-min spindown timer.",
             "evidence": evidence,
         }
     return {
-        "dev": dev,
-        "kind": "stay_awake",
-        "confidence": "low",
-        "primary_cause": "no recent block I/O",
+        "dev": dev, "kind": "stay_awake", "confidence": "low",
+        "primary_cause": "idle timer reset by metadata / open handles (no block I/O seen)",
         "cause_kind": "unknown",
-        "note": "disk is awake but shows no recent block I/O; a spindown timer may "
-        "not be set, or periodic SMART/ATA polls (not visible here) keep it up.",
+        "note": f"{dev} should sleep after {timer_min:.0f} min but hasn't; no block I/O is "
+        "visible, so it's likely metadata access or an open file handle resetting the timer. "
+        "Use the wake-audit diagnostic to catch the exact accessor.",
         "evidence": evidence,
     }
 
@@ -267,22 +293,39 @@ def attribute_power(window: dict, prev_pkg_w: Optional[float]) -> list[dict]:
             }
         )
 
-    # deep package C-state stall while otherwise idle
+    # deep package C-state stall
+    info = cpu.get("cstate_info", {}) or {}
+    deep_avail = info.get("deep_available", True)
+    deepest = info.get("deepest", "C3")
     pkg_cs = {name: pct for name, pct in cpu.get("pkg_cstates", [])}
     deep = pkg_cs.get("PC6", 0) + pkg_cs.get("PC8", 0) + pkg_cs.get("PC10", 0)
-    if pkg_cs and busy < 25.0 and deep < 1.0:
-        cause, _ = _top_cause(top, busy)
-        events.append(
-            {
-                "kind": "pkg_cstate_stall",
-                "confidence": "medium",
-                "primary_cause": cause,
-                "detail": f"system is {busy:.0f}% busy yet deep package C-states "
-                f"(PC6/8/10) are ~0%; something keeps the package awake. "
-                "Attribution of package-C-state blockers is inherently approximate "
-                f"(many small wakeups from timers/IRQs/containers).{ctx}",
-            }
-        )
+    if pkg_cs and deep < 1.0:
+        if not deep_avail:
+            # honest: this is a platform/firmware fact, NOT a runaway process
+            events.append(
+                {
+                    "kind": "pkg_cstate_stall",
+                    "confidence": "high",
+                    "primary_cause": f"deep C-states unavailable — platform exposes only {deepest}",
+                    "detail": f"deep package idle (PC6/8/10) is 0% because this machine only "
+                    f"exposes core C-states up to {deepest} (intel_idle ACPI fallback / a BIOS "
+                    f"'Package C-State Limit' setting). It is NOT a process keeping the CPU awake — "
+                    f"the CPU is only {busy:.0f}% busy. Fixable in BIOS/kernel, not by a3watch.",
+                }
+            )
+        elif busy < 25.0:
+            cause, _ = _top_cause(top, busy)
+            events.append(
+                {
+                    "kind": "pkg_cstate_stall",
+                    "confidence": "medium",
+                    "primary_cause": cause,
+                    "detail": f"system is {busy:.0f}% busy yet deep package C-states "
+                    f"(PC6/8/10) are ~0%; something keeps the package awake. "
+                    "Attribution of package-C-state blockers is inherently approximate "
+                    f"(many small wakeups from timers/IRQs/containers).{ctx}",
+                }
+            )
     return events
 
 

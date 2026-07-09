@@ -183,6 +183,21 @@ def pkg_cstates_available() -> bool:
     return util.path_exists(_MSR_DEV)
 
 
+def core_cstate_info() -> dict:
+    """What core C-states the platform actually exposes. If the deepest is only
+    C3, deep package idle (PC6+) is *impossible* here regardless of load — a
+    BIOS/kernel matter, not a busy process."""
+    base = "/sys/devices/system/cpu/cpu0/cpuidle"
+    names = []
+    for st in sorted(util.list_dir(base)):
+        if st.startswith("state"):
+            n = util.read_first_line(os.path.join(base, st, "name"))
+            if n:
+                names.append(n)
+    deep = any(any(t in n.upper() for t in ("C6", "C7", "C8", "C9", "C10")) for n in names)
+    return {"names": names, "deepest": names[-1] if names else "", "deep_available": deep}
+
+
 # ------------------------------------------------------------- busy% --------
 def read_cpu_busy() -> dict:
     """Raw jiffies from the aggregate /proc/stat cpu line."""

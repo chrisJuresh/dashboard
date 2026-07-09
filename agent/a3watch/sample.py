@@ -137,6 +137,19 @@ def _cycle(cfg: Config, conn, ts: float, boot: str, m0: float, ru0) -> dict:
         containers = _safe(procs.container_states, [])
         unit_fires = _safe(lambda: _read_unit_fires(dt), [])
 
+        # extra per-wake context (all non-waking): configured spindown timers,
+        # kernel I/O pressure, and dirty/writeback pages (write-driven wakes).
+        spindown = _safe(disks.detect_spindown_timers, {})
+        psi_io = _safe(lambda: util.read_text("/proc/pressure/io").strip(), "")
+        mem_kb = {}
+        for _l in _safe(lambda: util.read_text("/proc/meminfo").splitlines(), []):
+            if _l.startswith(("Dirty:", "Writeback:")):
+                p = _l.split()
+                try:
+                    mem_kb[p[0].rstrip(":")] = int(p[1])
+                except (IndexError, ValueError):
+                    pass
+
         cpu_top = sorted(pdelta, key=lambda p: p["cpu_pct"], reverse=True)[:8]
         # enrich with a human-meaningful identity: container/service + command line,
         # so a PID on the dashboard says *what* it is rather than just a number
@@ -154,6 +167,10 @@ def _cycle(cfg: Config, conn, ts: float, boot: str, m0: float, ru0) -> dict:
             "proc_io": pdelta,
             "cgroup_io": cg_delta,
             "unit_fires": unit_fires,
+            "spindown": spindown,
+            "psi_io": psi_io,
+            "dirty_kb": mem_kb.get("Dirty", 0),
+            "writeback_kb": mem_kb.get("Writeback", 0),
             "smart_pollers_running": any(
                 s.get("running") and any(k in s["name"] for k in ("scrutiny", "smartd"))
                 for s in containers
@@ -163,6 +180,7 @@ def _cycle(cfg: Config, conn, ts: float, boot: str, m0: float, ru0) -> dict:
                 "core_w": core_w,
                 "busy_pct": busy_pct,
                 "pkg_cstates": pkg_res,
+                "cstate_info": _safe(power.core_cstate_info, {}),
             },
             "cpu_top": cpu_top,
         }
@@ -295,11 +313,18 @@ def _persist_stay_awake(conn, ts, cfg, window, prev, disk_state) -> int:
         if st in ("active", "idle"):
             awake_since.setdefault(dc.dev, ts)
             mins = (ts - awake_since[dc.dev]) / 60.0
+            timer = window.get("spindown", {}).get(dc.dev)  # minutes; None=unset; 0=disabled
+            expected_sleep = isinstance(timer, (int, float)) and timer > 0
             had_spinup = any(window["disk_delta"].get(dc.dev, {}).get(k, 0)
                              for k in ("reads", "writes"))
-            if (mins >= _STAY_AWAKE_MIN and not had_spinup
+            # ONLY an anomaly worth flagging: a drive that HAS a spindown timer but
+            # has stayed awake well past it with no I/O (its idle timer is being reset,
+            # or the timer isn't taking effect). Timer-less drives are awake by config
+            # and are NOT flagged — that was the old false "stay_awake" noise.
+            overstayed = expected_sleep and mins >= (timer + 5)
+            if (overstayed and not had_spinup
                     and ts - last_flag.get(dc.dev, 0) > _STAY_AWAKE_THROTTLE):
-                ev = attribute.attribute_stay_awake(window, dc.dev, dc, mins)
+                ev = attribute.attribute_stay_awake(window, dc.dev, dc, mins, timer)
                 _write_disk_event(conn, ts, ev)
                 last_flag[dc.dev] = ts
                 n += 1

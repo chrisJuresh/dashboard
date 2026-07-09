@@ -76,6 +76,52 @@ def passive_power_state(dev: str) -> str:
     return "unknown"
 
 
+def _hdparm_s_to_min(n: int):
+    """Decode an `hdparm -S <n>` value to minutes. 0 => disabled (never spins down).
+    None => couldn't decode."""
+    if n == 0:
+        return 0.0  # spindown disabled
+    if 1 <= n <= 240:
+        return round(n * 5 / 60.0, 1)
+    if 241 <= n <= 251:
+        return float((n - 240) * 30)
+    if n == 252:
+        return 21.0
+    if n == 255:
+        return 21.6
+    return None
+
+
+def detect_spindown_timers() -> dict:
+    """{dev: minutes} for drives with a configured hdparm -S spindown timer.
+    minutes==0.0 means spindown is explicitly disabled; a dev absent from the map
+    has NO spindown configured (so it will simply stay awake — not an anomaly).
+    Non-waking: reads systemd unit files, /etc/hdparm.conf, and resolves symlinks."""
+    import glob
+    import re
+    out: dict = {}
+    texts = []
+    for f in glob.glob("/etc/systemd/system/*.service") + ["/etc/hdparm.conf"]:
+        texts.append(util.read_text(f))
+    # /etc/hdparm.conf blocks: "/dev/xxx { spindown_time = N }"
+    for m in re.finditer(r"(/dev/[\w/\-]+)\s*\{[^}]*spindown_time\s*=\s*(\d+)", "\n".join(texts)):
+        _map_spindown(out, m.group(1), int(m.group(2)))
+    # hdparm -S N <device> in unit ExecStart lines
+    for m in re.finditer(r"hdparm\s+.*?-S\s+(\d+)\s+(/dev/[\w/\-]+)", "\n".join(texts)):
+        _map_spindown(out, m.group(2), int(m.group(1)))
+    return out
+
+
+def _map_spindown(out: dict, path: str, nval: int) -> None:
+    try:
+        dev = os.path.basename(os.path.realpath(path))
+    except OSError:
+        return
+    mins = _hdparm_s_to_min(nval)
+    if dev and mins is not None:
+        out[dev] = mins
+
+
 def power_state(cfg: Config, dev: str) -> str:
     """Authoritative-where-allowed, always non-waking.
 
