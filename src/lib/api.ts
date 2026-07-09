@@ -214,6 +214,16 @@ export interface ConfigView {
 // ---- endpoints -------------------------------------------------------------
 export const api = {
 	health: () => req<{ ok: boolean; version: string; ts: number; mode: Mode }>('/api/health'),
+	// self-hosted login (same-origin mode)
+	session: () =>
+		req<{ authenticated: boolean; email: string | null; login_configured: boolean }>('/api/session'),
+	login: (email: string, password: string) =>
+		req<{ ok: boolean }>('/api/login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ email, password })
+		}),
+	logout: () => req<{ ok: boolean }>('/api/logout', { method: 'POST' }),
 	status: () => req<Status>('/api/status'),
 	diskEvents: (since = 0, limit = 200, dev = '') =>
 		req<{ events: DiskEvent[] }>(

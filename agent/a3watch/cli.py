@@ -291,6 +291,35 @@ def cmd_diag(args) -> int:
     return 0
 
 
+def cmd_set_login(args) -> int:
+    import getpass
+    from . import auth
+    cfg = cfgmod.load(args.config)
+    if os.geteuid() != 0:
+        print("set-login must run as root (sudo) to write the auth file.", file=sys.stderr)
+        return 2
+    email = args.email.strip()
+    if "@" not in email:
+        print("--email must be an email address", file=sys.stderr)
+        return 1
+    if args.password_stdin:
+        pw = sys.stdin.readline().rstrip("\n")
+        pw2 = pw
+    else:
+        pw = getpass.getpass(f"New dashboard password for {email}: ")
+        pw2 = getpass.getpass("Confirm password: ")
+    if pw != pw2:
+        print("passwords do not match", file=sys.stderr)
+        return 1
+    if len(pw) < 8:
+        print("use at least 8 characters", file=sys.stderr)
+        return 1
+    auth.set_login(cfg, email, pw)
+    print(f"Login set for {email}. Open your dashboard and sign in "
+          "(existing sessions keep working).")
+    return 0
+
+
 def cmd_uninstall(args) -> int:
     if not args.confirm:
         print("Re-run with --confirm to stop/disable and remove a3watch units.")
@@ -332,6 +361,11 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--with-diag", action="store_true", default=True,
                    help="apt-install diagnostic tracing tools (default on)")
     i.set_defaults(func=cmd_install)
+
+    sl = sub.add_parser("set-login", help="set the dashboard login email + password")
+    sl.add_argument("--email", required=True)
+    sl.add_argument("--password-stdin", action="store_true", help="read password from stdin instead of prompting")
+    sl.set_defaults(func=cmd_set_login)
 
     sub.add_parser("sample", help="run one sampling cycle").set_defaults(func=cmd_sample)
     sub.add_parser("serve", help="run the read-only API").set_defaults(func=cmd_serve)

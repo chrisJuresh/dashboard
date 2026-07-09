@@ -14,6 +14,7 @@ a3watch.api — read-only JSON API (stdlib http.server), socket-activated.
 
 from __future__ import annotations
 
+import http.cookies
 import json
 import mimetypes
 import os
@@ -30,11 +31,38 @@ try:
 except ImportError:  # pragma: no cover
     jwt = None
 
-from . import __version__, diag
+from . import __version__, auth, diag
 from .config import Config
 
 _last_request = [time.time()]
 _cf_jwks: dict = {}  # team_domain -> jwt.PyJWKClient (cached across requests)
+
+# --- login brute-force rate limit (per client IP, in-memory) ---
+_login_fails: dict = {}  # ip -> [count, window_start]
+_RL_MAX = 5
+_RL_WINDOW = 900  # 15 min
+
+
+def _rl_blocked(ip: str) -> bool:
+    e = _login_fails.get(ip)
+    if not e:
+        return False
+    if time.time() - e[1] > _RL_WINDOW:
+        _login_fails.pop(ip, None)
+        return False
+    return e[0] >= _RL_MAX
+
+
+def _rl_fail(ip: str) -> None:
+    e = _login_fails.get(ip)
+    if not e or time.time() - e[1] > _RL_WINDOW:
+        _login_fails[ip] = [1, time.time()]
+    else:
+        e[0] += 1
+
+
+def _rl_reset(ip: str) -> None:
+    _login_fails.pop(ip, None)
 
 
 def verify_cf_access(assertion: str, team_domain: str, aud: str) -> bool:
@@ -260,24 +288,45 @@ def make_handler(cfg: Config, token: str):
                 self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
-        def _send(self, code, obj):
+        def _send(self, code, obj, set_cookie=None):
             body = json.dumps(obj).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            if set_cookie:
+                self.send_header("Set-Cookie", set_cookie)
             self._cors()
             self.end_headers()
             self.wfile.write(body)
 
+        def _client_ip(self) -> str:
+            # Cloudflare sets Cf-Connecting-Ip; fall back to the socket peer.
+            return (self.headers.get("Cf-Connecting-Ip")
+                    or self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                    or self.client_address[0])
+
+        def _session_email(self):
+            raw = self.headers.get("Cookie", "")
+            if not raw:
+                return None
+            try:
+                jar = http.cookies.SimpleCookie(raw)
+            except http.cookies.CookieError:
+                return None
+            m = jar.get("a3sess")
+            return auth.verify_session(cfg, m.value) if m else None
+
         def _authed(self) -> bool:
             import hmac
-            # (1) Cloudflare Access SSO: trust a request bearing a valid Access JWT
-            #     (injected by Cloudflare at the edge after the user logs in).
+            # (1) Self-hosted session cookie (the normal browser login).
+            if self._session_email():
+                return True
+            # (2) Cloudflare Access SSO (optional): valid Access JWT injected at the edge.
             if cfg.cf_access_enabled:
                 assertion = self.headers.get("Cf-Access-Jwt-Assertion", "")
                 if verify_cf_access(assertion, cfg.cf_access_team_domain, cfg.cf_access_aud):
                     return True
-            # (2) Bearer token: for direct/remote/CLI use (and when Access is off).
+            # (3) Bearer token: for direct/remote/CLI use.
             hdr = self.headers.get("Authorization", "")
             got = hdr[7:] if hdr.startswith("Bearer ") else ""
             return bool(token) and hmac.compare_digest(got, token)
@@ -295,6 +344,10 @@ def make_handler(cfg: Config, token: str):
             if path == "/api/health":
                 return self._send(200, {"ok": True, "version": __version__, "ts": time.time(),
                                         "mode": "diagnostic" if diag.is_running(cfg) else "normal"})
+            if path == "/api/session":  # public: lets the SPA decide login vs dashboard
+                email = self._session_email()
+                return self._send(200, {"authenticated": bool(email), "email": email,
+                                        "login_configured": auth.login_configured(cfg)})
             if not path.startswith("/api/"):
                 # Serve the built SPA (or the fallback page). Static assets carry no
                 # secrets and the hostname is gated by Cloudflare Access at the edge.
@@ -360,9 +413,42 @@ def make_handler(cfg: Config, token: str):
                 return self._send(200, diag.result(cfg, sid))
             return self._send(404, {"error": "not found"})
 
+        def _read_json_body(self):
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length > 64 * 1024:
+                return None
+            try:
+                return json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                return None
+
+        def _handle_login(self):
+            ip = self._client_ip()
+            if _rl_blocked(ip):
+                return self._send(429, {"error": "too many attempts; wait a few minutes"})
+            body = self._read_json_body()
+            if body is None:
+                return self._send(400, {"error": "bad request"})
+            email = str(body.get("email", ""))
+            password = str(body.get("password", ""))
+            if auth.verify_password(cfg, email, password):
+                _rl_reset(ip)
+                sess = auth.make_session(cfg, auth.load_auth(cfg).get("email", ""))
+                cookie = (f"a3sess={sess}; Path=/; Max-Age={auth.SESSION_TTL}; "
+                          "HttpOnly; Secure; SameSite=Lax")
+                return self._send(200, {"ok": True}, set_cookie=cookie)
+            _rl_fail(ip)
+            return self._send(401, {"error": "invalid email or password"})
+
         def do_POST(self):
             _last_request[0] = time.time()
             u = urlparse(self.path)
+            # public auth endpoints (they ARE the way to authenticate)
+            if u.path == "/api/login":
+                return self._handle_login()
+            if u.path == "/api/logout":
+                return self._send(200, {"ok": True},
+                                  set_cookie="a3sess=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
             if u.path != "/api/diag/start":
