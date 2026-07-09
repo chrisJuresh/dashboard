@@ -187,7 +187,11 @@ def cmd_install(args) -> int:
         print(f"  wrote {path}")
     subprocess.run(["systemctl", "daemon-reload"], check=False)
     subprocess.run(["systemctl", "enable", "--now", "a3watch-sample.timer"], check=False)
-    subprocess.run(["systemctl", "enable", "--now", "a3watch-api.socket"], check=False)
+    # Restart (not just enable --now) the socket so a changed bind/port from a
+    # re-install actually takes effect; stop the service first to release the old fd.
+    subprocess.run(["systemctl", "stop", "a3watch-api.service"], check=False)
+    subprocess.run(["systemctl", "enable", "a3watch-api.socket"], check=False)
+    subprocess.run(["systemctl", "restart", "a3watch-api.socket"], check=False)
     print("\nEnabled a3watch-sample.timer and a3watch-api.socket.")
     _print_tunnel_help(cfg)
     print("\nUninstall any time with:  sudo a3watch uninstall --confirm")
