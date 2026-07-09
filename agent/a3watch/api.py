@@ -54,9 +54,15 @@ def _rl_blocked(ip: str) -> bool:
 
 
 def _rl_fail(ip: str) -> None:
+    now = time.time()
+    # bound memory: sweep expired windows once the map grows large (a distributed
+    # attack with many distinct source IPs can't grow the heap without limit).
+    if len(_login_fails) > 4096:
+        for k in [k for k, v in _login_fails.items() if now - v[1] > _RL_WINDOW]:
+            _login_fails.pop(k, None)
     e = _login_fails.get(ip)
-    if not e or time.time() - e[1] > _RL_WINDOW:
-        _login_fails[ip] = [1, time.time()]
+    if not e or now - e[1] > _RL_WINDOW:
+        _login_fails[ip] = [1, now]
     else:
         e[0] += 1
 
@@ -300,10 +306,10 @@ def make_handler(cfg: Config, token: str):
             self.wfile.write(body)
 
         def _client_ip(self) -> str:
-            # Cloudflare sets Cf-Connecting-Ip; fall back to the socket peer.
-            return (self.headers.get("Cf-Connecting-Ip")
-                    or self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                    or self.client_address[0])
+            # Trust only Cf-Connecting-Ip (set by the Cloudflare edge, not spoofable
+            # through it); otherwise the socket peer. We do NOT honor X-Forwarded-For,
+            # which a direct (non-CF) caller could rotate to defeat the rate limit.
+            return self.headers.get("Cf-Connecting-Ip") or self.client_address[0]
 
         def _session_email(self):
             raw = self.headers.get("Cookie", "")
@@ -447,6 +453,11 @@ def make_handler(cfg: Config, token: str):
             if u.path == "/api/login":
                 return self._handle_login()
             if u.path == "/api/logout":
+                # Only clear a session that this request actually carries. SameSite=Lax
+                # keeps the cookie from being sent cross-site, so a forced-logout POST
+                # from another origin has no session here and becomes a harmless no-op.
+                if not self._session_email():
+                    return self._send(200, {"ok": True})
                 return self._send(200, {"ok": True},
                                   set_cookie="a3sess=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
             if not self._authed():
