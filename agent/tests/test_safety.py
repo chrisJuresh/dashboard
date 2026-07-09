@@ -80,6 +80,14 @@ m = re.search(r"def hdparm_power_state.*?return None", usrc, re.S)
 check("hdparm_power_state body only references -C",
       m and '"-C"' in m.group(0) and not re.search(r'"-[SByYtI]"', m.group(0)))
 
+print("== hwmon must never read the drivetemp chip (would wake standby HDDs) ==")
+try:
+    from a3watch.collect import safe as _safe  # noqa: E402
+    chips = {r["chip"] for r in _safe.hwmon()}
+    check("collect.safe.hwmon excludes 'drivetemp'", "drivetemp" not in chips, f"chips={chips}")
+except Exception as e:
+    check("collect.safe.hwmon runnable", False, str(e))
+
 print()
 if FAILS:
     print(f"FAILED: {len(FAILS)} check(s): {', '.join(FAILS)}")

@@ -84,6 +84,11 @@ def hwmon() -> list:
     for h in util.list_dir(base):
         d = os.path.join(base, h)
         chip = util.read_first_line(os.path.join(d, "name")) or h
+        # CRITICAL: never read the 'drivetemp' chip — its temp*_input issues an ATA
+        # temperature command that can spin up a standby HDD. HDD temps come only from
+        # the gated smart_awake() path (awake disks only). This preserves non-waking.
+        if chip == "drivetemp":
+            continue
         for f in util.list_dir(d):
             v = util.read_int(os.path.join(d, f))
             if v is None:

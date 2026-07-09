@@ -43,6 +43,7 @@ def _parse_stat(txt: str):
 class Processes(Collector):
     name = "processes"
     group = "Processes"
+    every_cycles = 6  # full /proc walk — slow-changing snapshot, run ~every 2 min
 
     def collect(self, ctx: Ctx) -> list[Metric]:
         try:

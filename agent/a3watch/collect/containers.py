@@ -88,6 +88,7 @@ def _cgroup_cpu_usec(scope: str):
 class Containers(Collector):
     name = "containers"
     group = "Containers"
+    every_cycles = 3  # docker ps + cgroup walk — run ~every minute, not every cycle
 
     def collect(self, ctx: Ctx) -> list[Metric]:
         rc, out, _ = safe.run(

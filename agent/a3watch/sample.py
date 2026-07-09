@@ -371,7 +371,7 @@ def _run_collectors(cfg, conn, ts, cycle, disk_state, coll_prev, price_info):
                       budget_gbp_year=cfg.budget_gbp_year,
                       prev=dict(coll_prev or {}))
     ctx.prev["electricity"] = price_info  # let the electricity collector read source/live
-    latest, series = [], []
+    latest, series, ran = [], [], []
     for name, c in reg.items():
         if name in cfg.disabled_collectors:
             continue
@@ -381,10 +381,15 @@ def _run_collectors(cfg, conn, ts, cycle, disk_state, coll_prev, price_info):
             metrics = c.collect(ctx) or []
         except Exception:
             continue
+        ran.append(name)
         for m in metrics:
             latest.append((name, c.group, m.key, m.num, m.text, m.unit, ts))
             if m.series and m.num is not None:
                 series.append((ts, f"{name}.{m.key}", m.num))
+    # clear the latest snapshot of collectors that ran, so keys they no longer emit
+    # (e.g. a disk that went to sleep, the removed drivetemp chip) don't linger stale
+    for name in ran:
+        conn.execute("DELETE FROM metric_latest WHERE collector=?", (name,))
     db.insert_many(conn, "metric_latest",
                    ["collector", "grp", "key", "num", "txt", "unit", "ts"], latest)
     db.insert_many(conn, "metric_series", ["ts", "key", "num"], series)

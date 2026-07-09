@@ -106,6 +106,7 @@ def _tty_uids() -> set[int] | None:
 class System(Collector):
     name = "system"
     group = "System"
+    every_cycles = 6  # second /proc walk (tty uids) — slow-changing, run ~every 2 min
 
     def collect(self, ctx: Ctx) -> list[Metric]:
         out: list[Metric] = []
