@@ -9,13 +9,27 @@
 const LS_BASE = 'a3watch.apiBase';
 const LS_TOKEN = 'a3watch.token';
 
+// Build-time defaults for zero-entry auto-connect (optional, set as Vercel env vars).
+// The URL is not secret. VITE_A3WATCH_TOKEN is inlined into the client bundle, so only
+// set it when the deployment is protected by Vercel Authentication — otherwise anyone
+// who loads the site can read it. Precedence: localStorage (user-set) > env > default.
+const ENV_BASE = (import.meta.env.VITE_A3WATCH_API ?? '').replace(/\/+$/, '');
+const ENV_TOKEN = import.meta.env.VITE_A3WATCH_TOKEN ?? '';
+const DEFAULT_BASE = 'https://a3watch.chrisj.uk';
+
 export function getApiBase(): string {
-	if (typeof localStorage === 'undefined') return '';
-	return localStorage.getItem(LS_BASE) ?? '';
+	if (typeof localStorage !== 'undefined') {
+		const v = localStorage.getItem(LS_BASE);
+		if (v) return v;
+	}
+	return ENV_BASE || DEFAULT_BASE;
 }
 export function getToken(): string {
-	if (typeof localStorage === 'undefined') return '';
-	return localStorage.getItem(LS_TOKEN) ?? '';
+	if (typeof localStorage !== 'undefined') {
+		const v = localStorage.getItem(LS_TOKEN);
+		if (v) return v;
+	}
+	return ENV_TOKEN;
 }
 export function setConnection(base: string, token: string): void {
 	localStorage.setItem(LS_BASE, base.replace(/\/+$/, ''));
@@ -25,8 +39,10 @@ export function clearConnection(): void {
 	localStorage.removeItem(LS_BASE);
 	localStorage.removeItem(LS_TOKEN);
 }
+// Configured only when we have BOTH a base and a token — so with an env token the app
+// auto-connects, and without one it shows the connect screen (URL pre-filled).
 export function isConfigured(): boolean {
-	return getApiBase() !== '';
+	return getApiBase() !== '' && getToken() !== '';
 }
 
 export class ApiError extends Error {
