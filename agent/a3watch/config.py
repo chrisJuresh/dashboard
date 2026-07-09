@@ -51,7 +51,10 @@ class Config:
     raw_days: int = 14
     rollup_days: int = 365
     budget_gbp_year: float = 5.0
-    electricity_gbp_per_kwh: float = 0.25
+    electricity_gbp_per_kwh: float = 0.2703   # fallback if the live fetch fails
+    electricity_fetch: bool = True            # fetch the live London price daily
+    electricity_region: str = "C"             # Octopus GSP group (C = London)
+    disabled_collectors: list[str] = field(default_factory=list)  # names to skip
     # disk probing
     use_hdparm_c: bool = True
     # api
@@ -111,7 +114,10 @@ def load(path: str = DEFAULT_CONFIG_PATH) -> Config:
         raw_days=int(core.get("raw_days", 14)),
         rollup_days=int(core.get("rollup_days", 365)),
         budget_gbp_year=float(core.get("budget_gbp_year", 5.0)),
-        electricity_gbp_per_kwh=float(core.get("electricity_gbp_per_kwh", 0.25)),
+        electricity_gbp_per_kwh=float(core.get("electricity_gbp_per_kwh", 0.2703)),
+        electricity_fetch=bool(core.get("electricity_fetch", True)),
+        electricity_region=core.get("electricity_region", "C"),
+        disabled_collectors=list(core.get("disabled_collectors", [])),
         use_hdparm_c=bool(probe.get("use_hdparm_c", True)),
         api_bind=api.get("bind", "127.0.0.1"),
         api_port=int(api.get("port", 8787)),
@@ -168,8 +174,11 @@ def dumps(cfg: Config) -> str:
     lines.append(f"interval_s = {cfg.interval_s}              # sampling cadence (seconds)")
     lines.append(f"raw_days = {cfg.raw_days}                  # keep per-cycle raw rows this long")
     lines.append(f"rollup_days = {cfg.rollup_days}            # keep hourly rollups + events this long")
-    lines.append(f"budget_gbp_year = {cfg.budget_gbp_year}    # power-budget target shown on dashboard")
-    lines.append(f"electricity_gbp_per_kwh = {cfg.electricity_gbp_per_kwh}")
+    lines.append(f"budget_gbp_year = {cfg.budget_gbp_year}    # yearly self-overhead budget target (£)")
+    lines.append(f"electricity_gbp_per_kwh = {cfg.electricity_gbp_per_kwh}  # fallback if the live fetch fails")
+    lines.append(f"electricity_fetch = {_toml_val(cfg.electricity_fetch)}  # fetch the live London price daily")
+    lines.append(f"electricity_region = {_toml_str(cfg.electricity_region)}  # Octopus GSP group (C = London)")
+    lines.append(f"disabled_collectors = {_toml_val(cfg.disabled_collectors)}  # collector names to skip (remove features)")
     lines.append("")
     lines.append("[disk_probe]")
     lines.append(f"use_hdparm_c = {_toml_val(cfg.use_hdparm_c)}  # non-waking ATA CHECK POWER MODE for authoritative state")

@@ -232,6 +232,30 @@ def q_overhead(conn, cfg, frm, to) -> dict:
     return {"points": pts, "current": cur, "budget_gbp": cfg.budget_gbp_year}
 
 
+def q_metrics_latest(conn) -> dict:
+    rows = _rows(conn, "SELECT collector, grp, key, num, txt, unit, ts FROM metric_latest "
+                       "ORDER BY grp, collector, key")
+    groups: dict = {}
+    latest_ts = 0.0
+    for r in rows:
+        latest_ts = max(latest_ts, r["ts"] or 0)
+        g = groups.setdefault(r["grp"] or "Other", [])
+        g.append({"collector": r["collector"], "key": r["key"], "num": r["num"],
+                  "txt": r["txt"], "unit": r["unit"], "ts": r["ts"]})
+    return {"ts": latest_ts, "groups": [{"group": k, "metrics": v} for k, v in groups.items()]}
+
+
+def q_metric_series(conn, key, frm, to, res) -> dict:
+    if res == "hour":
+        pts = _rows(conn, "SELECT hour*3600 ts, avg_num num, min_num, max_num FROM metric_series_hourly "
+                          "WHERE key=? AND hour>=? AND hour<=? ORDER BY hour",
+                    (key, int(frm // 3600), int(to // 3600)))
+    else:
+        pts = _rows(conn, "SELECT ts, num FROM metric_series WHERE key=? AND ts>=? AND ts<=? ORDER BY ts",
+                    (key, frm, to))
+    return {"key": key, "points": pts}
+
+
 def q_config(cfg: Config) -> dict:
     return {
         "interval_s": cfg.interval_s, "budget_gbp_year": cfg.budget_gbp_year,
@@ -353,6 +377,13 @@ def make_handler(cfg: Config, token: str):
                 if path == "/api/overhead":
                     return self._send(200, q_overhead(conn, cfg, self._num(qs, "from", 0),
                                                       self._num(qs, "to", time.time())))
+                if path == "/api/metrics/latest":
+                    return self._send(200, q_metrics_latest(conn))
+                if path == "/api/metrics/series":
+                    return self._send(200, q_metric_series(conn, qs.get("key", [""])[0],
+                                                           self._num(qs, "from", 0),
+                                                           self._num(qs, "to", time.time()),
+                                                           qs.get("res", ["raw"])[0]))
                 if path == "/api/config":
                     return self._send(200, q_config(cfg))
                 return self._send(404, {"error": "not found"})

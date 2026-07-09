@@ -60,8 +60,12 @@ FORBIDDEN = [
     (r"scaling_governor['\"][^\n]*\bw['\"]", "writes cpufreq governor"),
     (r"['\"]dd['\"]\s*,\s*['\"]if=/dev", "dd on a device in argv"),
 ]
-for mod in NORMAL_MODULES:
-    path = os.path.join(PKG, "a3watch", mod)
+import glob  # noqa: E402
+paths = [os.path.join(PKG, "a3watch", m) for m in NORMAL_MODULES]
+# collector modules run every cycle => normal-mode; scan them too (diag.py is excluded).
+paths += sorted(glob.glob(os.path.join(PKG, "a3watch", "collect", "*.py")))
+for path in paths:
+    mod = os.path.relpath(path, os.path.join(PKG, "a3watch"))
     with open(path) as fh:
         src = fh.read()
     for pat, why in FORBIDDEN:

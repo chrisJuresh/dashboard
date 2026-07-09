@@ -194,6 +194,36 @@ CREATE TABLE IF NOT EXISTS disk_active_hourly (
     PRIMARY KEY (hour, dev)
 );
 
+-- current snapshot of every collector metric (small: one row per collector+key)
+CREATE TABLE IF NOT EXISTS metric_latest (
+    collector TEXT,
+    grp       TEXT,
+    key       TEXT,
+    num       REAL,
+    txt       TEXT,
+    unit      TEXT,
+    ts        REAL,
+    PRIMARY KEY (collector, key)
+);
+
+-- bounded history, only for metrics flagged series=True (e.g. temps, fan rpm, rates)
+CREATE TABLE IF NOT EXISTS metric_series (
+    ts  REAL,
+    key TEXT,     -- "collector.key"
+    num REAL,
+    PRIMARY KEY (ts, key)
+);
+CREATE INDEX IF NOT EXISTS idx_metric_series_key ON metric_series(key, ts);
+
+CREATE TABLE IF NOT EXISTS metric_series_hourly (
+    hour INTEGER,
+    key  TEXT,
+    avg_num REAL,
+    min_num REAL,
+    max_num REAL,
+    PRIMARY KEY (hour, key)
+);
+
 CREATE TABLE IF NOT EXISTS overhead (
     ts        REAL PRIMARY KEY,
     cpu_ms_day REAL,
@@ -287,6 +317,12 @@ def rollup_hour(conn: sqlite3.Connection, hour: int) -> None:
            FROM disk_sample WHERE ts>=? AND ts<? GROUP BY dev""",
         (hour, lo, hi),
     )
+    conn.execute(
+        """INSERT OR REPLACE INTO metric_series_hourly(hour,key,avg_num,min_num,max_num)
+           SELECT ?, key, AVG(num), MIN(num), MAX(num) FROM metric_series
+           WHERE ts>=? AND ts<? GROUP BY key""",
+        (hour, lo, hi),
+    )
 
 
 def prune(conn: sqlite3.Connection, now_ts: float, raw_days: int, rollup_days: int) -> None:
@@ -295,6 +331,7 @@ def prune(conn: sqlite3.Connection, now_ts: float, raw_days: int, rollup_days: i
     for tbl in (
         "sample", "cpu_power", "cpu_busy", "cstate", "cpu_top",
         "disk_sample", "proc_io", "cgroup_io", "unit_fire", "proc_flag",
+        "metric_series",
     ):
         conn.execute(f"DELETE FROM {tbl} WHERE ts < ?", (raw_cut,))
     # events kept for rollup_days (they are low-volume and high-value)
@@ -304,7 +341,7 @@ def prune(conn: sqlite3.Connection, now_ts: float, raw_days: int, rollup_days: i
     conn.execute("DELETE FROM disk_event WHERE ts < ?", (ev_cut,))
     conn.execute("DELETE FROM power_event WHERE ts < ?", (ev_cut,))
     conn.execute("DELETE FROM overhead WHERE ts < ?", (ev_cut,))
-    for tbl in ("cpu_power_hourly", "cstate_hourly", "disk_active_hourly"):
+    for tbl in ("cpu_power_hourly", "cstate_hourly", "disk_active_hourly", "metric_series_hourly"):
         conn.execute(f"DELETE FROM {tbl} WHERE hour < ?", (roll_cut_hour,))
 
 

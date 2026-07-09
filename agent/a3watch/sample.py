@@ -109,6 +109,15 @@ def _cycle(cfg: Config, conn, ts: float, boot: str, m0: float, ru0) -> dict:
             continue
         disk_state[dc.dev] = _safe(lambda d=dc.dev: disks.power_state(cfg, d), "unknown")
 
+    cycle = int(prev.get("cycle", 0)) + 1
+    from .collect import electricity as _elec
+    price_info = _safe(
+        lambda: _elec.current_price(prev, ts, cfg),
+        {"price": cfg.electricity_gbp_per_kwh, "source": "fallback", "updated": ts, "live": False},
+    )
+    prev["_cycle_next"] = cycle
+    prev["_electricity_next"] = price_info
+
     summary = {"ts": ts, "reset": reset, "events": 0, "power_events": 0}
 
     if not reset:
@@ -170,12 +179,17 @@ def _cycle(cfg: Config, conn, ts: float, boot: str, m0: float, ru0) -> dict:
         _persist_stray(conn, ts, pdelta, containers)
 
         # ---- overhead accounting + housekeeping ----
-        _update_overhead(conn, cfg, ts, prev, pkg_w, busy_pct, cur_core.get("ncpu", 1))
+        _update_overhead(conn, cfg, ts, prev, pkg_w, busy_pct, cur_core.get("ncpu", 1),
+                         price_info["price"])
         _rollup_and_prune(conn, cfg, ts, prev)
     else:
         name_map, names_ts = _container_names(prev, ts)
 
     _upsert_topology(conn, cfg, ts)
+
+    # ---- pluggable server-info collectors (every cycle; no new wakeups) ----
+    prev["_collector_state_next"] = _run_collectors(
+        cfg, conn, ts, cycle, disk_state, prev.get("collector_state", {}), price_info)
 
     # ---- self overhead for THIS cycle ----
     ru1 = resource.getrusage(resource.RUSAGE_SELF)
@@ -320,7 +334,39 @@ def _persist_stray(conn, ts, pdelta, containers):
                    [(ts, f["pid"], f["comm"], f["cgroup"], f["flag"], f["note"]) for f in flags])
 
 
-def _update_overhead(conn, cfg, ts, prev, pkg_w, busy_pct, ncpu):
+def _run_collectors(cfg, conn, ts, cycle, disk_state, coll_prev, price_info):
+    """Run every enabled, due collector once (in this same cycle — no new timers),
+    store their latest snapshot + series history. A collector can only touch a disk
+    via collect.safe's gated helpers, so this never wakes/edits an HDD."""
+    from . import collect
+    reg = collect.load_collectors()
+    awake = {dev for dev, st in disk_state.items() if st in ("idle", "active")}
+    ctx = collect.Ctx(ts=ts, interval_s=cfg.interval_s, cycle=cycle, awake_disks=awake,
+                      disks=cfg.disks, price_gbp_kwh=price_info.get("price", 0.0),
+                      budget_gbp_year=cfg.budget_gbp_year,
+                      prev=dict(coll_prev or {}))
+    ctx.prev["electricity"] = price_info  # let the electricity collector read source/live
+    latest, series = [], []
+    for name, c in reg.items():
+        if name in cfg.disabled_collectors:
+            continue
+        if c.every_cycles > 1 and (cycle % c.every_cycles) != 0:
+            continue
+        try:
+            metrics = c.collect(ctx) or []
+        except Exception:
+            continue
+        for m in metrics:
+            latest.append((name, c.group, m.key, m.num, m.text, m.unit, ts))
+            if m.series and m.num is not None:
+                series.append((ts, f"{name}.{m.key}", m.num))
+    db.insert_many(conn, "metric_latest",
+                   ["collector", "grp", "key", "num", "txt", "unit", "ts"], latest)
+    db.insert_many(conn, "metric_series", ["ts", "key", "num"], series)
+    return ctx.prev
+
+
+def _update_overhead(conn, cfg, ts, prev, pkg_w, busy_pct, ncpu, price):
     last_ov = prev.get("overhead_ts", 0)
     # EMA of the incremental power of one active core, learned from RAPL when busy
     acw = prev.get("active_core_watts_ema", _BUDGET_ASSUMED_WATTS_PER_CORE)
@@ -340,7 +386,7 @@ def _update_overhead(conn, cfg, ts, prev, pkg_w, busy_pct, ncpu):
     cpu_ms_day = mean_cpu_ms * cycles_day
     cpu_s_day = cpu_ms_day / 1000.0
     avg_watts = (cpu_s_day / 86400.0) * acw
-    gbp_year = avg_watts / 1000.0 * 8760.0 * cfg.electricity_gbp_per_kwh
+    gbp_year = avg_watts / 1000.0 * 8760.0 * price
     dbb = db.db_size_bytes(cfg.db_path)
     samples = conn.execute("SELECT COUNT(*) c FROM sample").fetchone()["c"]
     conn.execute(
@@ -424,4 +470,7 @@ def _pack_raw(cfg, ts, boot, rapl, core, pkg, busy, ds, procs_full, cgio,
                                                    _BUDGET_ASSUMED_WATTS_PER_CORE)),
         "rollup_hour": prev.get("_rollup_hour_next", prev.get("rollup_hour", 0)),
         "prune_ts": prev.get("_prune_ts_next", prev.get("prune_ts", 0)),
+        "cycle": prev.get("_cycle_next", prev.get("cycle", 0)),
+        "electricity": prev.get("_electricity_next", prev.get("electricity", {})),
+        "collector_state": prev.get("_collector_state_next", prev.get("collector_state", {})),
     }
