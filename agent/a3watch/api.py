@@ -15,6 +15,7 @@ a3watch.api — read-only JSON API (stdlib http.server), socket-activated.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import socket
 import sqlite3
@@ -23,10 +24,38 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+try:
+    import jwt  # PyJWT (system package) — used only to verify Cloudflare Access tokens
+except ImportError:  # pragma: no cover
+    jwt = None
+
 from . import __version__, diag
 from .config import Config
 
 _last_request = [time.time()]
+_cf_jwks: dict = {}  # team_domain -> jwt.PyJWKClient (cached across requests)
+
+
+def verify_cf_access(assertion: str, team_domain: str, aud: str) -> bool:
+    """True iff `assertion` is a valid Cloudflare Access JWT for this team + app.
+    Cloudflare injects the Cf-Access-Jwt-Assertion header on requests it has
+    authenticated; verifying its signature/aud/issuer proves the caller passed
+    the Access login (and can't be forged by, e.g., a sibling container)."""
+    if not (jwt and assertion and team_domain and aud):
+        return False
+    try:
+        client = _cf_jwks.get(team_domain)
+        if client is None:
+            client = jwt.PyJWKClient(f"https://{team_domain}/cdn-cgi/access/certs")
+            _cf_jwks[team_domain] = client
+        signing_key = client.get_signing_key_from_jwt(assertion)
+        jwt.decode(
+            assertion, signing_key.key, algorithms=["RS256"],
+            audience=aud, issuer=f"https://{team_domain}",
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _ro_conn(cfg: Config) -> sqlite3.Connection:
@@ -241,6 +270,13 @@ def make_handler(cfg: Config, token: str):
 
         def _authed(self) -> bool:
             import hmac
+            # (1) Cloudflare Access SSO: trust a request bearing a valid Access JWT
+            #     (injected by Cloudflare at the edge after the user logs in).
+            if cfg.cf_access_enabled:
+                assertion = self.headers.get("Cf-Access-Jwt-Assertion", "")
+                if verify_cf_access(assertion, cfg.cf_access_team_domain, cfg.cf_access_aud):
+                    return True
+            # (2) Bearer token: for direct/remote/CLI use (and when Access is off).
             hdr = self.headers.get("Authorization", "")
             got = hdr[7:] if hdr.startswith("Bearer ") else ""
             return bool(token) and hmac.compare_digest(got, token)
@@ -255,13 +291,13 @@ def make_handler(cfg: Config, token: str):
             _last_request[0] = time.time()
             u = urlparse(self.path)
             path, qs = u.path, parse_qs(u.query)
-            if path in ("/", "/index.html"):
-                return self._fallback_page()
             if path == "/api/health":
                 return self._send(200, {"ok": True, "version": __version__, "ts": time.time(),
                                         "mode": "diagnostic" if diag.is_running(cfg) else "normal"})
             if not path.startswith("/api/"):
-                return self._send(404, {"error": "not found"})
+                # Serve the built SPA (or the fallback page). Static assets carry no
+                # secrets and the hostname is gated by Cloudflare Access at the edge.
+                return self._serve_static(path)
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
             try:
@@ -340,6 +376,42 @@ def make_handler(cfg: Config, token: str):
                 return self._send(200, {"session_id": sid})
             except diag.DiagError as e:
                 return self._send(400, {"error": str(e)})
+
+        def _serve_static(self, path: str):
+            """Serve the built SPA from cfg.web_dir with path-traversal protection and
+            SPA fallback to index.html. Falls back to the built-in page if no SPA is
+            installed."""
+            root = os.path.realpath(cfg.web_dir)
+            rel = path.lstrip("/") or "index.html"
+            full = os.path.realpath(os.path.join(root, rel))
+            # containment check — never serve outside web_dir
+            if full != root and not full.startswith(root + os.sep):
+                return self._send(403, {"error": "forbidden"})
+            if not os.path.isfile(full):
+                # client-side route (no file extension) → SPA shell; else 404
+                index = os.path.join(root, "index.html")
+                if "." not in os.path.basename(rel) and os.path.isfile(index):
+                    full = index
+                elif os.path.isfile(index):
+                    full = index
+                else:
+                    return self._fallback_page()
+            try:
+                with open(full, "rb") as fh:
+                    body = fh.read()
+            except OSError:
+                return self._fallback_page()
+            ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            # immutable hashed assets can cache; the shell should not
+            if "/_app/immutable/" in path:
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
 
         def _fallback_page(self):
             html = _FALLBACK_HTML.encode()

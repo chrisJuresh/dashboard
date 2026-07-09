@@ -61,6 +61,10 @@ class Config:
     allow_origins: list[str] = field(default_factory=list)
     # tunnel (informational; user wires cloudflared themselves)
     tunnel_hostname: str = ""
+    # unified same-origin deployment: serve the built SPA + gate with Cloudflare Access
+    web_root: str = ""               # dir of built SPA assets; defaults to <data_dir>/web
+    cf_access_team_domain: str = ""  # e.g. myteam.cloudflareaccess.com (enables Access JWT auth)
+    cf_access_aud: str = ""          # the Access application's AUD tag
     # topology
     disks: list[DiskCfg] = field(default_factory=list)
 
@@ -77,6 +81,14 @@ class Config:
     def diag_dir(self) -> str:
         return os.path.join(self.data_dir, "diag")
 
+    @property
+    def web_dir(self) -> str:
+        return self.web_root or os.path.join(self.data_dir, "web")
+
+    @property
+    def cf_access_enabled(self) -> bool:
+        return bool(self.cf_access_team_domain and self.cf_access_aud)
+
     def disk(self, dev: str) -> Optional[DiskCfg]:
         for d in self.disks:
             if d.dev == dev:
@@ -92,6 +104,7 @@ def load(path: str = DEFAULT_CONFIG_PATH) -> Config:
     probe = raw.get("disk_probe", {})
     api = raw.get("api", {})
     tunnel = raw.get("tunnel", {})
+    access = raw.get("access", {})
     cfg = Config(
         data_dir=core.get("data_dir", DEFAULT_DATA_DIR),
         interval_s=int(core.get("interval_s", 20)),
@@ -105,6 +118,9 @@ def load(path: str = DEFAULT_CONFIG_PATH) -> Config:
         api_idle_exit_s=int(api.get("idle_exit_s", 120)),
         allow_origins=list(api.get("allow_origins", [])),
         tunnel_hostname=tunnel.get("hostname", ""),
+        web_root=access.get("web_root", ""),
+        cf_access_team_domain=access.get("team_domain", ""),
+        cf_access_aud=access.get("aud", ""),
     )
     for d in raw.get("disk", []):
         cfg.disks.append(
@@ -166,6 +182,14 @@ def dumps(cfg: Config) -> str:
     lines.append("")
     lines.append("[tunnel]")
     lines.append(f"hostname = {_toml_str(cfg.tunnel_hostname)}  # informational; you wire cloudflared")
+    lines.append("")
+    lines.append("[access]")
+    lines.append("# Cloudflare Access SSO gate for the unified same-origin deployment. When set, the")
+    lines.append("# agent serves the built dashboard AND verifies Cloudflare's signed login token, so")
+    lines.append("# no bearer token is typed in the browser. Leave blank for token-only mode.")
+    lines.append(f"team_domain = {_toml_str(cfg.cf_access_team_domain)}  # e.g. myteam.cloudflareaccess.com")
+    lines.append(f"aud = {_toml_str(cfg.cf_access_aud)}                  # Access application AUD tag")
+    lines.append(f"web_root = {_toml_str(cfg.web_root)}                  # blank => <data_dir>/web")
     lines.append("")
     lines.append("# ---- Detected storage topology. Adjust roles / protection as needed. ----")
     lines.append("# role: system|pool|parity|backup|data|unknown")

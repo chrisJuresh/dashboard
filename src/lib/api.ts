@@ -15,7 +15,10 @@ const LS_TOKEN = 'a3watch.token';
 // who loads the site can read it. Precedence: localStorage (user-set) > env > default.
 const ENV_BASE = (import.meta.env.VITE_A3WATCH_API ?? '').replace(/\/+$/, '');
 const ENV_TOKEN = import.meta.env.VITE_A3WATCH_TOKEN ?? '';
-const DEFAULT_BASE = 'https://a3watch.chrisj.uk';
+// Default is SAME-ORIGIN (''): the agent serves this SPA and its /api behind Cloudflare
+// Access, so no URL or token is entered — Access handles login and the API is relative.
+// An absolute base (env var or the connect screen) switches to remote/bearer-token mode.
+const DEFAULT_BASE = '';
 
 export function getApiBase(): string {
 	if (typeof localStorage !== 'undefined') {
@@ -31,6 +34,10 @@ export function getToken(): string {
 	}
 	return ENV_TOKEN;
 }
+/** True when calls hit the same origin (served by the agent behind Cloudflare Access). */
+export function isSameOrigin(): boolean {
+	return getApiBase() === '';
+}
 export function setConnection(base: string, token: string): void {
 	localStorage.setItem(LS_BASE, base.replace(/\/+$/, ''));
 	localStorage.setItem(LS_TOKEN, token);
@@ -39,10 +46,10 @@ export function clearConnection(): void {
 	localStorage.removeItem(LS_BASE);
 	localStorage.removeItem(LS_TOKEN);
 }
-// Configured only when we have BOTH a base and a token — so with an env token the app
-// auto-connects, and without one it shows the connect screen (URL pre-filled).
+// Same-origin mode is always "configured" (Cloudflare Access gates it, no token needed).
+// Remote mode needs a bearer token; otherwise show the connect screen.
 export function isConfigured(): boolean {
-	return getApiBase() !== '' && getToken() !== '';
+	return isSameOrigin() || getToken() !== '';
 }
 
 export class ApiError extends Error {
