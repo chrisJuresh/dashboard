@@ -13,6 +13,7 @@ The API bearer token is NOT stored here — it lives in <data_dir>/token with
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field, asdict
 from typing import Optional
@@ -100,6 +101,68 @@ class Config:
 
 
 # ------------------------------------------------------------------ load ----
+def stable_disk_id(dev: str) -> str:
+    """A drive's stable hardware identity (serial, else WWN/wwid, else VPD),
+    read from cached sysfs. Same fallback order `detect` uses, so a stored value
+    always matches what we read back. NON-WAKING: these are cached IDENTIFY
+    fields in kernel memory, not live ATA commands. '' if none available.
+
+    On these SATA drives `serial` is absent and `wwid` (e.g. 'naa.50014ee2...')
+    is the stable id."""
+    for p in (f"/sys/block/{dev}/device/serial",
+              f"/sys/block/{dev}/device/wwid",
+              f"/sys/block/{dev}/device/vpd_pg80"):
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                s = fh.readline().strip()
+        except OSError:
+            continue
+        if s:
+            return s
+    return ""
+
+
+def _serial_dev_map() -> dict:
+    """{stable disk id -> current kernel name} for SATA/PATA whole disks. Lets us
+    follow a physical drive across a sdX rename (add or pull a disk and what was
+    sde can come back as sdf). NON-WAKING (see stable_disk_id)."""
+    out: dict = {}
+    try:
+        blocks = os.listdir("/sys/block")
+    except OSError:
+        return out
+    for dev in blocks:
+        if dev[:2] not in ("sd", "hd"):
+            continue  # nvme/mmc names are already stable; only sdX/hdX shuffle
+        sid = stable_disk_id(dev)
+        if sid:
+            out.setdefault(sid, dev)
+    return out
+
+
+def resolve_devs_by_serial(cfg: "Config") -> list:
+    """Re-point each disk's `dev` (and maj_min) at whatever kernel name currently
+    holds that drive's serial, so a sdX rename never misattributes data to the
+    wrong bay. No-op for disks without a stored serial (older configs) or whose
+    name is unchanged. Returns [(serial, old_dev, new_dev)] for any remaps."""
+    smap = _serial_dev_map()
+    remaps: list = []
+    if not smap:
+        return remaps
+    for dc in cfg.disks:
+        s = (dc.serial or "").strip()
+        if not s or s not in smap:
+            continue
+        cur = smap[s]
+        if cur != dc.dev:
+            remaps.append((s, dc.dev, cur))
+            dc.dev = cur
+            mm = util.dev_maj_min(cur)
+            if mm:
+                dc.maj_min = mm
+    return remaps
+
+
 def load(path: str = DEFAULT_CONFIG_PATH) -> Config:
     with open(path, "rb") as fh:
         raw = tomllib.load(fh)
@@ -145,6 +208,13 @@ def load(path: str = DEFAULT_CONFIG_PATH) -> Config:
                 protected=bool(d.get("protected", True)),
                 monitored=bool(d.get("monitored", True)),
             )
+        )
+    # Follow physical drives across sdX renames (uses the stable serial). A
+    # remap is rare and worth surfacing in the journal; correctness happens
+    # regardless of whether anyone reads the message.
+    for serial, old, new in resolve_devs_by_serial(cfg):
+        sys.stderr.write(
+            f"a3watch: disk {serial} moved {old} -> {new}; following by serial\n"
         )
     return cfg
 
@@ -215,6 +285,9 @@ def dumps(cfg: Config) -> str:
         lines.append(f"role = {_toml_str(d.role)}")
         lines.append(f"label = {_toml_str(d.label)}")
         lines.append(f"model = {_toml_str(d.model)}")
+        # serial is the STABLE identity: dev/maj_min are kernel names that can
+        # change when disks are added/removed; serial follows the physical drive.
+        lines.append(f"serial = {_toml_str(d.serial)}")
         lines.append(f"mount = {_toml_str(d.mount)}")
         lines.append(f"fs = {_toml_str(d.fs)}")
         lines.append(f"size_bytes = {d.size_bytes}")

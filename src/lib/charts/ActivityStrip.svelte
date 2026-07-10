@@ -16,17 +16,25 @@
 	const W = $derived(Math.max(200, cw || 800));
 	const GAP = 2;
 
+	// Four visually-distinct states, green→warm by power draw:
+	//   asleep (standby/sleeping) → good (green): platters parked, ~0 W
+	//   active (I/O this cycle)   → serious (orange): spinning + working
+	//   spinning/idle (awake, no I/O) → warning (amber): spun up but quiet
+	//   not measured (unknown/'') → hatched: state couldn't be read (e.g. a
+	//     `protected` drive a3watch never probes, or a transient hdparm miss)
 	function cellFill(p: Cell): string {
 		const st = p.power_state;
 		if (st === 'standby' || st === 'sleeping') return 'var(--good)';
-		if (p.active === 1 || st === 'active') return 'var(--warning)';
-		return 'var(--surface-2)';
+		if (st === 'unknown' || st === '' || st == null) return 'url(#as-hatch)';
+		if (p.active === 1) return 'var(--serious)';
+		return 'var(--warning)'; // idle / active-idle: awake but no I/O this cycle
 	}
 	function stateLabel(p: Cell): string {
 		const st = p.power_state;
-		if (st === 'standby' || st === 'sleeping') return st;
-		if (p.active === 1 || st === 'active') return 'active';
-		return st || 'unknown';
+		if (st === 'standby' || st === 'sleeping') return 'asleep';
+		if (st === 'unknown' || st === '' || st == null) return 'not measured';
+		if (p.active === 1) return 'active (I/O)';
+		return 'spinning (idle)';
 	}
 
 	const cellW = $derived(points.length ? W / points.length : 0);
@@ -38,6 +46,18 @@
 		<div class="empty muted" style="height:{height}px">no data</div>
 	{:else}
 		<svg viewBox="0 0 {W} {height}" width={W} {height} role="img">
+			<defs>
+				<pattern
+					id="as-hatch"
+					width="6"
+					height="6"
+					patternUnits="userSpaceOnUse"
+					patternTransform="rotate(45)"
+				>
+					<rect width="6" height="6" fill="var(--surface-2)" />
+					<line x1="0" y1="0" x2="0" y2="6" stroke="var(--text-muted)" stroke-width="1.5" />
+				</pattern>
+			</defs>
 			{#each points as p, i (p.ts)}
 				<rect
 					x={i * cellW}
@@ -54,9 +74,10 @@
 	{/if}
 
 	<div class="legend">
-		<span class="leg-item"><span class="sw" style="background:var(--good)"></span>standby / sleeping</span>
-		<span class="leg-item"><span class="sw" style="background:var(--warning)"></span>active</span>
-		<span class="leg-item"><span class="sw" style="background:var(--surface-2)"></span>idle / unknown</span>
+		<span class="leg-item"><span class="sw" style="background:var(--good)"></span>asleep</span>
+		<span class="leg-item"><span class="sw" style="background:var(--warning)"></span>spinning (idle)</span>
+		<span class="leg-item"><span class="sw" style="background:var(--serious)"></span>active (I/O)</span>
+		<span class="leg-item"><span class="sw sw-hatch"></span>not measured</span>
 	</div>
 </div>
 
@@ -96,5 +117,14 @@
 		border-radius: 2px;
 		border: 1px solid var(--border);
 		flex: none;
+	}
+	.sw-hatch {
+		background: repeating-linear-gradient(
+			45deg,
+			var(--surface-2),
+			var(--surface-2) 2px,
+			var(--text-muted) 2px,
+			var(--text-muted) 3px
+		);
 	}
 </style>
