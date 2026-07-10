@@ -9,6 +9,7 @@
 		{ href: '/disks', label: 'Disks' },
 		{ href: '/power', label: 'Power & C‑states' },
 		{ href: '/processes', label: 'Processes' },
+		{ href: '/map', label: 'System map' },
 		{ href: '/overhead', label: 'Overhead' },
 		{ href: '/diagnostics', label: 'Diagnostics' },
 		{ href: '/settings', label: 'Settings' }

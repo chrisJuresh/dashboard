@@ -164,6 +164,81 @@ export interface ConfigView {
 	}[];
 }
 
+// ---- system map (docker / tunnel / git / systemd / domains / ~/) -----------
+export interface TreeNode {
+	name: string;
+	type: 'dir' | 'file' | 'symlink' | 'mount';
+	size?: number;
+	files?: number;
+	mtime?: number;
+	collapsed?: boolean;
+	truncated?: boolean;
+	note?: string;
+	children?: TreeNode[];
+}
+export interface SysMap {
+	home: string;
+	git: {
+		path: string;
+		remote: string;
+		branch: string;
+		upstream: string;
+		last_commit: string;
+		dirty_files: number;
+		ci_workflows: string[];
+	}[];
+	docker: {
+		containers: {
+			name: string;
+			image: string;
+			state: string;
+			restarts: number;
+			restart_policy: string;
+			networks: string[];
+			ports: string[];
+			mounts: string[];
+			cmd: string;
+		}[];
+		networks: { name: string; driver: string }[];
+		compose_files: string[];
+	};
+	tunnel: { running: boolean; container: string; image: string; note: string };
+	access_domains: {
+		access: { enabled: boolean; team_domain: string; aud: string };
+		hostnames: string[];
+		cors_allow_origins: string[];
+		api_bind: string;
+	};
+	systemd: {
+		units: {
+			unit: string;
+			description: string;
+			active: string;
+			enabled: string;
+			schedule?: string;
+			exec?: string;
+		}[];
+	};
+	secrets: {
+		path: string;
+		kind: string;
+		mode: string;
+		owner: string;
+		world_accessible: boolean;
+		note: string;
+	}[];
+	home_tree: {
+		root?: TreeNode;
+		total_files?: number;
+		total_bytes?: number;
+		nodes_shown?: number;
+		capped?: boolean;
+		error?: string;
+	};
+	pipelines: { name: string; steps: string[] }[];
+	cloud_snapshot: unknown | null;
+}
+
 // ---- metrics (generic collector output) ------------------------------------
 export interface Metric {
 	collector: string;
@@ -218,6 +293,8 @@ export const api = {
 			`/api/overhead?from=${from}&to=${to}`
 		),
 	config: () => req<ConfigView>('/api/config'),
+	// full read-only map of the box (docker / tunnel / git / systemd / domains / ~/)
+	sysmap: () => req<SysMap>('/api/sysmap'),
 	// generic metrics feed (latest snapshot grouped for display)
 	metricsLatest: () => req<MetricsLatest>('/api/metrics/latest'),
 	metricSeries: (key: string, from: number, to: number, res: 'raw' | 'hour' = 'raw') =>
