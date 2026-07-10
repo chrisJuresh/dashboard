@@ -66,6 +66,40 @@ cfg.disks = [DiskCfg(dev="sdz", serial="naa.deadbeefnotpresent")]
 check("absent-serial disk is a no-op", config.resolve_devs_by_serial(cfg) == [])
 check("absent-serial disk keeps its configured dev", cfg.disks[0].dev == "sdz")
 
+print("== a pulled drive (serial absent from system) is marked not-present ==")
+if smap:
+    cfg = Config()
+    cfg.disks = [DiskCfg(dev="sdgone", serial="naa.deadbeefpulled")]
+    config.resolve_devs_by_serial(cfg)
+    check("absent-serial drive flagged present=False", cfg.disks[0].present is False)
+
+print("== pull+rename collision: cfg.disk() returns the PRESENT entry, not the ghost ==")
+if smap:
+    real_id, real_dev = next(iter(smap.items()))
+    cfg = Config()
+    # ghost: a removed drive whose stale entry still names `real_dev`, protected=False
+    ghost = DiskCfg(dev=real_dev, serial="naa.deadbeefpulled", protected=False)
+    # live: the surviving drive that now occupies `real_dev`, operator set protected=True
+    live = DiskCfg(dev="sdX_old", serial=real_id, protected=True)
+    cfg.disks = [ghost, live]  # ghost first — the dangerous ordering
+    config.resolve_devs_by_serial(cfg)
+    check("ghost marked not-present", ghost.present is False)
+    check("live remapped onto the shared dev", live.dev == real_dev and live.present)
+    got = cfg.disk(real_dev)
+    check("cfg.disk() returns the PRESENT (live) entry", got is live,
+          f"returned {'live' if got is live else 'ghost' if got is ghost else None}")
+    check("so the live drive's protected=True is honoured (no command bypass)",
+          got.protected is True)
+
+print("== dev + maj_min stay in lockstep on remap ==")
+if smap:
+    real_id, real_dev = next(iter(smap.items()))
+    cfg = Config()
+    cfg.disks = [DiskCfg(dev="sdX_old", serial=real_id, maj_min="99:99")]
+    config.resolve_devs_by_serial(cfg)
+    check("maj_min no longer the stale 99:99 after dev remap",
+          cfg.disks[0].maj_min != "99:99")
+
 print("== the writer persists serial (so the stable id survives a rewrite) ==")
 cfg = Config()
 cfg.disks = [DiskCfg(dev="sda", serial="naa.1234", model="X")]

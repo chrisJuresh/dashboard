@@ -105,8 +105,8 @@ def _cycle(cfg: Config, conn, ts: float, boot: str, m0: float, ru0) -> dict:
     # ---- disk power states (non-waking; hdparm -C only for non-protected) ----
     disk_state: dict[str, str] = {}
     for dc in cfg.disks:
-        if not dc.monitored:
-            continue
+        if not dc.monitored or not dc.present:
+            continue  # skip pulled/offline drives — their old dev may now be another disk
         disk_state[dc.dev] = _safe(lambda d=dc.dev: disks.power_state(cfg, d), "unknown")
 
     cycle = int(prev.get("cycle", 0)) + 1
@@ -260,7 +260,7 @@ def _insert_series(conn, ts, cfg, dt, watts, busy, iowait, irq, core_res, pkg_re
                    [(ts, t["pid"], t["comm"], t.get("cgroup", ""), t["cpu_pct"]) for t in cpu_top])
     rows = []
     for dc in cfg.disks:
-        if not dc.monitored:
+        if not dc.monitored or not dc.present:
             continue
         d = ds_delta.get(dc.dev, {})
         active = 1 if (d.get("reads", 0) or d.get("writes", 0)) else 0
@@ -449,6 +449,8 @@ def _rollup_and_prune(conn, cfg, ts, prev):
 
 def _upsert_topology(conn, cfg, ts):
     for dc in cfg.disks:
+        if not dc.present:
+            continue  # don't refresh a pulled drive's row; it ages out of q_status
         conn.execute(
             """INSERT INTO disk(dev,role,model,serial,size_bytes,mount,fs,label,rotational,
                  pool,protected,monitored,maj_min,first_seen,last_seen)

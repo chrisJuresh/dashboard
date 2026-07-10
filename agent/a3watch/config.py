@@ -46,6 +46,10 @@ class DiskCfg:
     # runtime-only marker: a drive found on the system but not yet in the config
     # (auto-discovered). Not persisted; a human formalises it via `a3watch detect`.
     auto_detected: bool = False
+    # runtime-only: False once resolve_devs_by_serial finds this drive's serial is
+    # no longer present (pulled/offline). Not persisted. Kept out of probing and
+    # sampling so a pulled drive can't collide with whatever took its old sdX name.
+    present: bool = True
 
 
 @dataclass
@@ -97,10 +101,17 @@ class Config:
         return bool(self.cf_access_team_domain and self.cf_access_aud)
 
     def disk(self, dev: str) -> Optional[DiskCfg]:
+        # Prefer a PRESENT entry: after a pull+rename two entries can momentarily
+        # share a dev (a removed drive's stale entry + the drive that took its
+        # name). The present one is the physical drive now at `dev`, so its
+        # protected/role must win — never a ghost's.
+        fallback = None
         for d in self.disks:
             if d.dev == dev:
-                return d
-        return None
+                if d.present:
+                    return d
+                fallback = fallback or d
+        return fallback
 
 
 # ------------------------------------------------------------------ load ----
@@ -126,17 +137,13 @@ def stable_disk_id(dev: str) -> str:
 
 
 def _serial_dev_map() -> dict:
-    """{stable disk id -> current kernel name} for SATA/PATA whole disks. Lets us
-    follow a physical drive across a sdX rename (add or pull a disk and what was
-    sde can come back as sdf). NON-WAKING (see stable_disk_id)."""
+    """{stable disk id -> current kernel name} for EVERY whole disk (sd/hd/nvme/vd).
+    Two jobs: follow a physical drive across a sdX rename, and tell which configured
+    drives are still present. It must cover all disk types — not just sdX — or a
+    non-sdX drive (e.g. the NVMe system disk) would be wrongly judged absent.
+    NON-WAKING (see stable_disk_id); disks without a readable id are simply omitted."""
     out: dict = {}
-    try:
-        blocks = os.listdir("/sys/block")
-    except OSError:
-        return out
-    for dev in blocks:
-        if dev[:2] not in ("sd", "hd"):
-            continue  # nvme/mmc names are already stable; only sdX/hdX shuffle
+    for dev in util.block_devices():
         sid = stable_disk_id(dev)
         if sid:
             out.setdefault(sid, dev)
@@ -151,18 +158,27 @@ def resolve_devs_by_serial(cfg: "Config") -> list:
     smap = _serial_dev_map()
     remaps: list = []
     if not smap:
+        # Can't read any serials (sysfs unreadable / no SATA disks) — don't guess
+        # presence; leave every entry as-is.
         return remaps
     for dc in cfg.disks:
         s = (dc.serial or "").strip()
-        if not s or s not in smap:
-            continue
-        cur = smap[s]
-        if cur != dc.dev:
-            remaps.append((s, dc.dev, cur))
-            dc.dev = cur
-            mm = util.dev_maj_min(cur)
-            if mm:
-                dc.maj_min = mm
+        if not s:
+            continue  # no stable id — can't resolve or judge presence
+        if s in smap:
+            dc.present = True
+            cur = smap[s]
+            if cur != dc.dev:
+                remaps.append((s, dc.dev, cur))
+                # set dev + maj_min together so they never desync (a stale
+                # maj_min would misattribute cgroup I/O)
+                dc.dev = cur
+                dc.maj_min = util.dev_maj_min(cur) or ""
+        else:
+            # this drive's serial is not on the system → it's been pulled/offlined.
+            # Flag it so probing + sampling skip it and cfg.disk() de-prioritises it
+            # (its old sdX name may now belong to a different physical drive).
+            dc.present = False
     return remaps
 
 

@@ -216,6 +216,14 @@ def _disk_identity(dev, mounts, labels, mount_to_dev, pools, root_backing) -> di
     }
 
 
+def _is_removable(dev: str) -> bool:
+    """True for removable media (USB/SD/optical) — /sys/block/<dev>/removable is 1.
+    Fixed HDDs/SSDs/NVMe report 0. Optical (sr*) is always treated as removable."""
+    if dev.startswith("sr"):
+        return True
+    return util.read_first_line(f"/sys/block/{dev}/removable").strip() == "1"
+
+
 def enumerate_disks() -> list[dict]:
     """Every whole block device with its non-waking identity. NO subprocess and
     NO disk command — pure sysfs/proc/fstab reads — so it can never spin a drive
@@ -252,6 +260,12 @@ def discover_new_disks(cfg: Config) -> list[DiskCfg]:
     for d in enum:
         sid = (d["serial"] or "").strip()
         if d["dev"] in known_devs or (sid and sid in known_serials):
+            continue
+        # only auto-add FIXED disks. Skip removable media (USB sticks, SD/card
+        # readers, phones in mass-storage, optical) so transient devices don't
+        # accumulate as permanent dashboard entries. A human can still add a
+        # removable drive deliberately via `a3watch detect`.
+        if _is_removable(d["dev"]):
             continue
         added.append(
             DiskCfg(

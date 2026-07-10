@@ -253,7 +253,14 @@ def cmd_status(args) -> int:
         if not d.monitored:
             continue
         state = disks.power_state(cfg, d.dev) if d.rotational else "n/a (ssd)"
-        tag = "" if not d.rotational else ("  [asleep]" if state in ("standby", "sleeping") else "  [AWAKE]")
+        if not d.rotational:
+            tag = ""
+        elif state in ("standby", "sleeping"):
+            tag = "  [asleep]"
+        elif state in ("active", "idle"):
+            tag = "  [AWAKE]"
+        else:  # 'unknown' — passive-only (protected) drive; don't claim awake
+            tag = "  [state not probed]"
         print(f"  {d.dev:10} {d.role:8} {state:9}{tag}  {d.mount}  {d.label}")
     # latest recorded metrics if the DB exists
     if os.path.exists(cfg.db_path):

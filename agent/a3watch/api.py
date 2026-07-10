@@ -78,7 +78,12 @@ def q_status(cfg: Config, conn) -> dict:
     latest = _one(conn, "SELECT MAX(ts) t FROM sample")
     ts = (latest or {}).get("t") or 0
     disks = []
-    for d in _rows(conn, "SELECT * FROM disk ORDER BY rotational DESC, dev"):
+    # hide pulled/offline drives: a present drive's row is re-upserted every cycle
+    # (last_seen ~= ts), a removed one's last_seen goes stale. 10-min grace covers a
+    # brief sampling gap. ts==0 (empty DB) shows everything.
+    seen_cutoff = ts - 600 if ts else -1
+    for d in _rows(conn, "SELECT * FROM disk WHERE last_seen > ? ORDER BY rotational DESC, dev",
+                   (seen_cutoff,)):
         last = _one(conn,
                     "SELECT power_state, active FROM disk_sample WHERE dev=? ORDER BY ts DESC LIMIT 1",
                     (d["dev"],))

@@ -76,6 +76,15 @@ if one["serial"]:
 else:
     print("  (first disk has no serial — skipping serial-match check)")
 
+print("== removable media (USB/SD/optical) is not auto-added ==")
+check("_is_removable('sr0') is True (optical)", detect._is_removable("sr0") is True)
+# every disk discovered on an empty config must be a fixed (non-removable) disk
+cfg = Config()
+detect.discover_new_disks(cfg)
+check("no auto-discovered disk is removable",
+      all(not detect._is_removable(d.dev) for d in cfg.disks if d.auto_detected),
+      f"discovered={[d.dev for d in cfg.disks]}")
+
 print()
 if FAILS:
     print(f"FAILED: {len(FAILS)} check(s): {', '.join(FAILS)}")
