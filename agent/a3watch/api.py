@@ -269,7 +269,7 @@ def q_config(cfg: Config) -> dict:
         "disks": [{"dev": d.dev, "role": d.role, "label": d.label, "mount": d.mount,
                    "rotational": d.rotational, "protected": d.protected,
                    "monitored": d.monitored, "pool": d.pool, "model": d.model,
-                   "auto_detected": d.auto_detected} for d in cfg.disks],
+                   "serial": d.serial, "auto_detected": d.auto_detected} for d in cfg.disks],
     }
 
 

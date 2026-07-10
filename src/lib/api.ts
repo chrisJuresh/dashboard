@@ -159,6 +159,7 @@ export interface ConfigView {
 		monitored: boolean;
 		pool: string;
 		model?: string;
+		serial?: string;
 		auto_detected?: boolean;
 	}[];
 }

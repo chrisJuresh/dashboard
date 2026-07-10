@@ -44,6 +44,31 @@
 	// Rotational devices only — spin state is meaningful for HDDs, not NVMe.
 	const rotational = $derived(config ? config.disks.filter((d) => d.rotational) : []);
 
+	type DiskCfg = ConfigView['disks'][number];
+	// udev by-label symlinks encode spaces/specials as \xNN (e.g. "New\x20Volume").
+	function decodeLabel(s: string): string {
+		return (s || '').replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+	}
+	// A drive's HEADLINE identity is its stable label — fstab label, else mount, else
+	// model — NOT the kernel sdX name (which can change when disks are added/removed).
+	function driveTitle(d: DiskCfg | undefined, fallback = ''): string {
+		if (!d) return fallback;
+		return decodeLabel(d.label) || d.mount || d.model || d.dev;
+	}
+	// sdX is kept as a secondary detail (+ role/pool), never the headline.
+	function driveSub(d: DiskCfg | undefined, fallback = ''): string {
+		if (!d) return fallback;
+		const bits = [d.dev];
+		if (d.pool) bits.push(`pool ${d.pool}`);
+		else if (d.role && d.role !== 'unknown') bits.push(d.role);
+		return bits.join(' · ');
+	}
+	const disksByDev = $derived.by(() => {
+		const m = new Map<string, DiskCfg>();
+		for (const d of config?.disks ?? []) m.set(d.dev, d);
+		return m;
+	});
+
 	// Look up a single latest metric by collector + key (metrics are grouped for display).
 	function findMetric(collector: string, key: string): Metric | undefined {
 		if (!metrics) return undefined;
@@ -232,10 +257,9 @@
 				<div class="strips">
 					{#each rotational as d (d.dev)}
 						<div class="strip-row">
-							<div class="strip-label">
-								<span class="dev tabular">{d.dev}</span>
-								{#if d.label}<span class="lbl muted">{d.label}</span
-									>{:else if d.model}<span class="lbl muted">{d.model}</span>{/if}
+							<div class="strip-label" title={d.serial ? `${d.model} · ${d.serial}` : d.model}>
+								<span class="name">{driveTitle(d, d.dev)}</span>
+								<span class="dev-sub muted tabular">{driveSub(d, d.dev)}</span>
 								{#if d.auto_detected}<span
 										class="new-badge"
 										title="Auto-detected drive, not yet reviewed. a3watch is monitoring it passively — no commands are sent to it. Run `a3watch detect` to assign a bay and enable non-waking state probing.">new · review</span
@@ -257,6 +281,7 @@
 				{:else}
 					<ul class="temps">
 						{#each diskTemps as dt (dt.dev)}
+							{@const d = disksByDev.get(dt.dev)}
 							<li class="temp-row">
 								<span
 									class="state"
@@ -264,8 +289,8 @@
 									class:asleep={dt.awake === false}
 									aria-hidden="true">{dt.awake === true ? '⟳' : dt.awake === false ? '☾' : '·'}</span
 								>
-								<span class="dev tabular">{dt.dev}</span>
-								{#if dt.label}<span class="lbl muted">{dt.label}</span>{/if}
+								<span class="name">{driveTitle(d, dt.dev)}</span>
+								<span class="dev-sub muted tabular">{driveSub(d, dt.dev)}</span>
 								<span class="reading tabular" class:muted={!dt.hasTemp} title={dt.tip}
 									>{dt.reading}</span
 								>
@@ -293,13 +318,17 @@
 	{:else}
 		<ul class="timeline">
 			{#each rows as { event: e, rel, when } (e.id)}
+				{@const d = disksByDev.get(e.dev)}
 				<li class="event card">
 					<div class="event-head">
 						<span class="kind" data-kind={e.kind}>
 							<span class="kind-icon" aria-hidden="true">{KIND[e.kind].icon}</span>{KIND[e.kind]
 								.label}
 						</span>
-						<span class="dev tabular">{e.dev}</span>
+						<span class="name" title={d?.serial ? `${e.dev} · ${d.model} · ${d.serial}` : e.dev}
+							>{driveTitle(d, e.dev)}</span
+						>
+						<span class="dev-sub muted tabular">{driveSub(d, e.dev)}</span>
 						<ConfidenceBadge confidence={e.confidence} />
 						<span class="when muted tabular">{rel} · {when}</span>
 					</div>
@@ -399,13 +428,22 @@
 	.strip-label {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: 1px;
 		min-width: 0;
 	}
-	.strip-label .lbl {
-		font-size: 11px;
+	/* stable identity is the headline; sdX + role are the muted sub-line */
+	.name {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--text-primary);
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.dev-sub {
+		font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+		font-size: 11px;
 		white-space: nowrap;
 	}
 	.new-badge {
@@ -461,13 +499,6 @@
 	.temp-row .state.awake {
 		color: var(--warning);
 	}
-	.temp-row .lbl {
-		font-size: 12px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		min-width: 0;
-	}
 	.temp-row .reading {
 		margin-left: auto;
 		font-size: 13px;
@@ -521,12 +552,6 @@
 	.kind-icon {
 		font-size: 10px;
 		line-height: 1;
-	}
-	.dev {
-		font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
-		font-size: 13px;
-		font-weight: 600;
-		color: var(--text-primary);
 	}
 	.when {
 		margin-left: auto;

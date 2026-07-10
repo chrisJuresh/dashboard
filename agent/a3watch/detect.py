@@ -25,6 +25,13 @@ def _parent_disk(part: str) -> str:
     return part
 
 
+def _unescape_label(s: str) -> str:
+    """udev by-label symlinks encode spaces/specials as \\xNN (e.g. 'New\\x20Volume').
+    Decode to the real label for display + storage."""
+    import re
+    return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), s)
+
+
 def _device_labels() -> dict[str, str]:
     """partition-name -> filesystem label, from /dev/disk/by-label symlinks."""
     out: dict[str, str] = {}
@@ -32,7 +39,7 @@ def _device_labels() -> dict[str, str]:
     for lbl in util.list_dir(base):
         try:
             tgt = os.path.basename(os.path.realpath(os.path.join(base, lbl)))
-            out[tgt] = lbl
+            out[tgt] = _unescape_label(lbl)
         except OSError:
             continue
     return out
