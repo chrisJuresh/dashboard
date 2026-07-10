@@ -183,19 +183,76 @@ def pkg_cstates_available() -> bool:
     return util.path_exists(_MSR_DEV)
 
 
+# MWAIT sub-state hint (high nibble) -> hardware C-state number, per Intel's
+# client encoding used by Linux intel_idle.c (0x00=C1, 0x10=C3, 0x20=C6, 0x30=C7,
+# 0x40=C8, 0x50=C9, 0x60=C10). This is the ONLY reliable depth signal: when the
+# kernel exposes ACPI _CST states their *names* are generic (C1_ACPI/C2_ACPI/
+# C3_ACPI) and say nothing about the real depth — a box whose deepest state is
+# named "C3_ACPI" can still reach hardware C10 (MWAIT 0x60). The hint lives in
+# each cpuidle state's `desc`, e.g. "ACPI FFH MWAIT 0x60".
+_MWAIT_HINT_TO_CSTATE = {0x0: 1, 0x1: 3, 0x2: 6, 0x3: 7, 0x4: 8, 0x5: 9, 0x6: 10}
+
+
+def _cstate_from_desc(desc: str) -> Optional[int]:
+    """Hardware C-state number decoded from a state `desc` MWAIT hint, or None
+    (POLL and non-MWAIT states have no hint)."""
+    import re
+    m = re.search(r"MWAIT\s+0x([0-9a-fA-F]+)", desc or "")
+    if not m:
+        return None
+    return _MWAIT_HINT_TO_CSTATE.get((int(m.group(1), 16) >> 4) & 0xF)
+
+
+def _cstate_from_name(name: str) -> Optional[int]:
+    """Fallback depth from a *native* intel_idle name like 'C6'/'C7s'/'C10'.
+    Only trustworthy when there is no MWAIT hint to decode; ACPI names
+    (C1_ACPI/C2_ACPI/C3_ACPI) are the ACPI *type*, not the true depth, so callers
+    must prefer _cstate_from_desc()."""
+    import re
+    m = re.match(r"C(\d+)", (name or "").strip().upper())
+    return int(m.group(1)) if m else None
+
+
+def _state_index(st: str) -> int:
+    tail = st[5:] if st.startswith("state") else st
+    return int(tail) if tail.isdigit() else 0
+
+
 def core_cstate_info() -> dict:
-    """What core C-states the platform actually exposes. If the deepest is only
-    C3, deep package idle (PC6+) is *impossible* here regardless of load — a
-    BIOS/kernel matter, not a busy process."""
+    """What core C-states the platform actually *reaches*, decoded from the MWAIT
+    hint rather than the (often meaningless) ACPI state name.
+
+    `deep_available` means the cores can enter C6 or deeper. It concerns cores
+    only — it says nothing about *package* residency, which is gated separately
+    by uncore/iGPU/PCIe activity and a distinct BIOS 'Package C-State Limit'."""
     base = "/sys/devices/system/cpu/cpu0/cpuidle"
-    names = []
-    for st in sorted(util.list_dir(base)):
-        if st.startswith("state"):
-            n = util.read_first_line(os.path.join(base, st, "name"))
-            if n:
-                names.append(n)
-    deep = any(any(t in n.upper() for t in ("C6", "C7", "C8", "C9", "C10")) for n in names)
-    return {"names": names, "deepest": names[-1] if names else "", "deep_available": deep}
+    names: list[str] = []
+    deepest_num = 0
+    deepest_name = ""
+    for st in sorted(util.list_dir(base), key=_state_index):
+        if not st.startswith("state"):
+            continue
+        n = util.read_first_line(os.path.join(base, st, "name"))
+        if not n:
+            continue
+        names.append(n)
+        if n.upper() == "POLL":
+            continue
+        num = _cstate_from_desc(util.read_first_line(os.path.join(base, st, "desc")) or "")
+        if num is None:
+            num = _cstate_from_name(n)
+        if num is not None and num > deepest_num:
+            deepest_num, deepest_name = num, n
+    label = f"C{deepest_num}" if deepest_num else (names[-1] if names else "")
+    # surface the ACPI alias so the naming confusion is explicit, not hidden
+    if deepest_name and deepest_name.upper() != label.upper():
+        label = f"C{deepest_num} (exposed as {deepest_name})"
+    return {
+        "names": names,
+        "deepest": label,
+        "deepest_num": deepest_num,
+        "deep_available": deepest_num >= 6,
+    }
 
 
 # ------------------------------------------------------------- busy% --------

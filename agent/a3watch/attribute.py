@@ -293,37 +293,43 @@ def attribute_power(window: dict, prev_pkg_w: Optional[float]) -> list[dict]:
             }
         )
 
-    # deep package C-state stall
+    # deep package C-state stall — decoded, and honest about cores vs package
     info = cpu.get("cstate_info", {}) or {}
     deep_avail = info.get("deep_available", True)
-    deepest = info.get("deepest", "C3")
+    deepest = info.get("deepest", "") or "?"
     pkg_cs = {name: pct for name, pct in cpu.get("pkg_cstates", [])}
     deep = pkg_cs.get("PC6", 0) + pkg_cs.get("PC8", 0) + pkg_cs.get("PC10", 0)
+    shallow = pkg_cs.get("PC2", 0) + pkg_cs.get("PC3", 0)
     if pkg_cs and deep < 1.0:
         if not deep_avail:
-            # honest: this is a platform/firmware fact, NOT a runaway process
+            # genuinely no deep CORE C-states exposed -> package cannot go deep.
+            # A real platform fact (rare); still not a process.
             events.append(
                 {
                     "kind": "pkg_cstate_stall",
                     "confidence": "high",
-                    "primary_cause": f"deep C-states unavailable — platform exposes only {deepest}",
-                    "detail": f"deep package idle (PC6/8/10) is 0% because this machine only "
-                    f"exposes core C-states up to {deepest} (intel_idle ACPI fallback / a BIOS "
-                    f"'Package C-State Limit' setting). It is NOT a process keeping the CPU awake — "
-                    f"the CPU is only {busy:.0f}% busy. Fixable in BIOS/kernel, not by a3watch.",
+                    "primary_cause": f"cores don't reach C6+ (deepest {deepest})",
+                    "detail": f"the cores themselves never enter C6+, so deep package idle "
+                    f"(PC6/8/10) is impossible regardless of load — a BIOS/kernel C-state "
+                    f"matter, not a process. CPU is {busy:.0f}% busy.",
                 }
             )
         elif busy < 25.0:
-            cause, _ = _top_cause(top, busy)
+            # cores DO reach deep C-states but the PACKAGE won't. NOT "no deep
+            # states", NOT a busy process to kill. Report the true divide and give
+            # candidate causes with explicit uncertainty (low confidence).
             events.append(
                 {
                     "kind": "pkg_cstate_stall",
-                    "confidence": "medium",
-                    "primary_cause": cause,
-                    "detail": f"system is {busy:.0f}% busy yet deep package C-states "
-                    f"(PC6/8/10) are ~0%; something keeps the package awake. "
-                    "Attribution of package-C-state blockers is inherently approximate "
-                    f"(many small wakeups from timers/IRQs/containers).{ctx}",
+                    "confidence": "low",
+                    "primary_cause": "package held at PC3 (uncore/iGPU/PCIe or BIOS package-C-state limit)",
+                    "detail": f"cores reach deep C-states ({deepest}) and the box is only "
+                    f"{busy:.0f}% busy, yet package PC6/8/10 stay ~0% (PC2+PC3 ≈ {shallow:.0f}%). "
+                    f"The package — not the cores — is being kept out of deep idle. Likely "
+                    f"candidates (uncertain, not proven): a BIOS 'Package C-State Limit' set "
+                    f"shallower than the per-core setting, an always-active PCIe/uncore agent, "
+                    f"or the iGPU not holding RC6. A platform matter to confirm in BIOS or with "
+                    f"a diagnostic turbostat/powertop run — not a process a3watch can attribute.",
                 }
             )
     return events
