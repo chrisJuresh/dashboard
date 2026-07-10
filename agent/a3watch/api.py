@@ -30,7 +30,7 @@ try:
 except ImportError:  # pragma: no cover
     jwt = None
 
-from . import __version__, diag, sysmap
+from . import __version__, diag, sysmap, cicd
 from .config import Config
 
 _last_request = [time.time()]
@@ -394,6 +394,8 @@ def make_handler(cfg: Config, token: str):
                     return self._send(200, q_config(cfg))
                 if path == "/api/sysmap":
                     return self._send(200, sysmap.build_map(cfg))
+                if path == "/api/cicd":
+                    return self._send(200, cicd.check(force=qs.get("force", [""])[0] == "1"))
                 return self._send(404, {"error": "not found"})
             finally:
                 conn.close()

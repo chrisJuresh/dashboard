@@ -255,6 +255,28 @@ export interface CloudSnapshot {
 	tunnels?: { name: string; id: string; status: string; ingress: { hostname: string; service: string }[] }[];
 }
 
+// ---- CI/CD deployment status -----------------------------------------------
+export type CicdState = 'up_to_date' | 'out_of_date' | 'deploying' | 'ci_failed' | 'unknown';
+export interface CicdItem {
+	name: string;
+	repo: string;
+	kind?: 'ci' | 'manual';
+	state: CicdState;
+	detail?: string;
+	latest_commit?: string;
+	commit_msg?: string;
+	run?: { status?: string; conclusion?: string; head?: string; url?: string; at?: number };
+	behind?: number;
+	local_head?: string;
+	origin_head?: string;
+}
+export interface CicdStatus {
+	generated: number;
+	summary: { all_up_to_date: boolean; deploying: number; out_of_date: number; ci_failed: number };
+	items: CicdItem[];
+	cached: boolean;
+}
+
 // ---- metrics (generic collector output) ------------------------------------
 export interface Metric {
 	collector: string;
@@ -311,6 +333,8 @@ export const api = {
 	config: () => req<ConfigView>('/api/config'),
 	// full read-only map of the box (docker / tunnel / git / systemd / domains / ~/)
 	sysmap: () => req<SysMap>('/api/sysmap'),
+	// CI/CD: is each deployment current with GitHub, mid-deploy, or behind?
+	cicd: (force = false) => req<CicdStatus>('/api/cicd' + (force ? '?force=1' : '')),
 	// generic metrics feed (latest snapshot grouped for display)
 	metricsLatest: () => req<MetricsLatest>('/api/metrics/latest'),
 	metricSeries: (key: string, from: number, to: number, res: 'raw' | 'hour' = 'raw') =>

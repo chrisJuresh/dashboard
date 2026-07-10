@@ -10,6 +10,7 @@
 		{ href: '/power', label: 'Power & C‑states' },
 		{ href: '/processes', label: 'Processes' },
 		{ href: '/map', label: 'System map' },
+		{ href: '/cicd', label: 'CI/CD' },
 		{ href: '/overhead', label: 'Overhead' },
 		{ href: '/diagnostics', label: 'Diagnostics' },
 		{ href: '/settings', label: 'Settings' }

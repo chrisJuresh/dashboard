@@ -50,7 +50,7 @@ check("diagnostic bypass requires allow_diagnostic",
 print("== source pattern scan (normal-mode modules) ==")
 NORMAL_MODULES = ["util.py", "disks.py", "power.py", "procs.py", "sample.py",
                   "detect.py", "attribute.py", "api.py", "cli.py", "config.py", "db.py",
-                  "sysmap.py"]
+                  "sysmap.py", "cicd.py"]
 # Patterns target actual code (raw-device opens and quoted argv lists), not the
 # prose in docstrings that describes what is forbidden.
 FORBIDDEN = [
