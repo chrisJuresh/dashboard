@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { fmtDateTime } from '$lib/format';
 
-	interface Cell {
+	interface Point {
 		ts: number;
 		active: number;
 		power_state: string;
 	}
 	interface Props {
-		points: Cell[];
+		points: Point[];
 		height?: number;
 	}
 	let { points, height = 34 }: Props = $props();
@@ -15,34 +15,77 @@
 	let cw = $state(0);
 	const W = $derived(Math.max(200, cw || 800));
 	const GAP = 2;
+	// cap the cell count so a wide range (e.g. 7 d ≈ 10 000 samples) renders as a
+	// readable strip rather than thousands of sub-pixel rects. Points are bucketed
+	// down to this many cells; each cell shows the "most awake" state in its span.
+	const MAX_CELLS = 360;
 
-	// Four visually-distinct states, green→warm by power draw:
-	//   asleep (standby/sleeping) → good (green): platters parked, ~0 W
-	//   active (I/O this cycle)   → serious (orange): spinning + working
-	//   spinning/idle (awake, no I/O) → warning (amber): spun up but quiet
-	//   not measured (unknown/'') → hatched: state couldn't be read (e.g. a
-	//     `protected` drive a3watch never probes, or a transient hdparm miss)
-	function cellFill(p: Cell): string {
+	type State = 'standby' | 'idle' | 'active' | 'unknown';
+	// Rank for bucketing: the most-awake sample in a bucket wins, so a brief wake in
+	// an otherwise-asleep span is never hidden, and "unknown" only shows when a whole
+	// bucket was unmeasured (never masking a known state).
+	const RANK: Record<State, number> = { active: 3, idle: 2, standby: 1, unknown: 0 };
+
+	function pointState(p: Point): State {
 		const st = p.power_state;
-		if (st === 'standby' || st === 'sleeping') return 'var(--good)';
-		if (st === 'unknown' || st === '' || st == null) return 'url(#as-hatch)';
-		if (p.active === 1) return 'var(--serious)';
-		return 'var(--warning)'; // idle / active-idle: awake but no I/O this cycle
+		if (st === 'standby' || st === 'sleeping') return 'standby';
+		// recorded I/O proves the drive was spinning — this is how a cell that was
+		// logged "unknown" (e.g. during a window when probing was off) gets filled in.
+		if (p.active === 1) return 'active';
+		if (st === 'idle' || st === 'active') return 'idle';
+		return 'unknown';
 	}
-	function stateLabel(p: Cell): string {
-		const st = p.power_state;
-		if (st === 'standby' || st === 'sleeping') return 'asleep';
-		if (st === 'unknown' || st === '' || st == null) return 'not measured';
-		if (p.active === 1) return 'active (I/O)';
+
+	interface Cell {
+		ts: number;
+		to: number;
+		state: State;
+		hadIO: boolean;
+		n: number;
+	}
+	const cells = $derived.by<Cell[]>(() => {
+		if (!points.length) return [];
+		const size = Math.max(1, Math.ceil(points.length / MAX_CELLS));
+		const out: Cell[] = [];
+		for (let i = 0; i < points.length; i += size) {
+			const group = points.slice(i, i + size);
+			let best: State = 'unknown';
+			let hadIO = false;
+			for (const p of group) {
+				const s = pointState(p);
+				if (p.active === 1) hadIO = true;
+				if (RANK[s] > RANK[best]) best = s;
+			}
+			out.push({
+				ts: group[0].ts,
+				to: group[group.length - 1].ts,
+				state: best,
+				hadIO,
+				n: group.length
+			});
+		}
+		return out;
+	});
+
+	function cellFill(c: Cell): string {
+		if (c.state === 'standby') return 'var(--good)';
+		if (c.state === 'unknown') return 'url(#as-hatch)';
+		if (c.state === 'active') return 'var(--serious)';
+		return 'var(--warning)'; // idle: spinning, no I/O
+	}
+	function cellLabel(c: Cell): string {
+		if (c.state === 'standby') return 'asleep';
+		if (c.state === 'unknown') return 'not measured';
+		if (c.state === 'active') return 'active (I/O)';
 		return 'spinning (idle)';
 	}
 
-	const cellW = $derived(points.length ? W / points.length : 0);
-	const rectW = $derived(Math.max(1, cellW - GAP));
+	const cellW = $derived(cells.length ? W / cells.length : 0);
+	const rectW = $derived(Math.max(1, cellW - (cellW > 3 ? GAP : 0)));
 </script>
 
 <div class="strip" bind:clientWidth={cw}>
-	{#if !points.length}
+	{#if !cells.length}
 		<div class="empty muted" style="height:{height}px">no data</div>
 	{:else}
 		<svg viewBox="0 0 {W} {height}" width={W} {height} role="img">
@@ -58,16 +101,13 @@
 					<line x1="0" y1="0" x2="0" y2="6" stroke="var(--text-muted)" stroke-width="1.5" />
 				</pattern>
 			</defs>
-			{#each points as p, i (p.ts)}
-				<rect
-					x={i * cellW}
-					y="0"
-					width={rectW}
-					height={height}
-					rx="2"
-					style="fill:{cellFill(p)}"
-				>
-					<title>{fmtDateTime(p.ts)} · {stateLabel(p)} · active={p.active}</title>
+			{#each cells as c, i (c.ts)}
+				<rect x={i * cellW} y="0" width={rectW} height={height} rx="2" style="fill:{cellFill(c)}">
+					<title
+						>{fmtDateTime(c.ts)}{c.n > 1 ? ` – ${fmtDateTime(c.to)}` : ''} · {cellLabel(c)}{c.n > 1
+							? ` · ${c.n} samples`
+							: ''}</title
+					>
 				</rect>
 			{/each}
 		</svg>

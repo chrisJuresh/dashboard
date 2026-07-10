@@ -20,11 +20,22 @@
 
 	let config = $state<ConfigView | null>(null);
 	let events = $state<DiskEvent[]>([]);
-	let stripSeries = $state<Record<string, DiskPoint[]>>({}); // per-dev 24h activity
+	let stripSeries = $state<Record<string, DiskPoint[]>>({}); // per-dev activity over the window
 	let metrics = $state<MetricsLatest | null>(null);
 	let selectedDev = $state(''); // '' = All
 	let loading = $state(true);
 	let error = $state<unknown>(null);
+
+	// Adjustable activity window. Capped at 7 d — raw per-cycle samples are retained
+	// ~14 d, so anything up to that renders from real data.
+	const RANGES = [
+		{ label: '6 h', hours: 6 },
+		{ label: '24 h', hours: 24 },
+		{ label: '3 d', hours: 72 },
+		{ label: '7 d', hours: 168 }
+	];
+	let rangeHours = $state(24);
+	const rangeLabel = $derived(RANGES.find((r) => r.hours === rangeHours)?.label ?? `${rangeHours} h`);
 
 	function isUnreachable(e: unknown): boolean {
 		return e instanceof ApiError && (e.message === 'not-configured' || e.message === 'unreachable');
@@ -134,17 +145,19 @@
 		);
 	});
 
-	// Last-24h activity strip for EVERY rotational disk (small multiples), so all
-	// disks are visible at once — independent of the events filter below.
+	// Activity strip for EVERY rotational disk (small multiples), so all disks are
+	// visible at once — independent of the events filter below. Re-fetches when the
+	// range changes.
 	$effect(() => {
 		const devs = rotational.map((d) => d.dev);
+		const hours = rangeHours;
 		if (devs.length === 0) return;
 		let cancelled = false;
 		const now = Math.floor(Date.now() / 1000);
 		Promise.all(
 			devs.map((dev) =>
 				api
-					.diskSeries(dev, now - 86400, now)
+					.diskSeries(dev, now - hours * 3600, now)
 					.then((r) => [dev, r.points] as const)
 					.catch(() => [dev, [] as DiskPoint[]] as const)
 			)
@@ -199,7 +212,20 @@
 	</p>
 
 	<div class="strip-card">
-		<Card title="Disk activity — last 24 h (all disks)">
+		<Card title={`Disk activity — last ${rangeLabel} (all disks)`}>
+			{#snippet actions()}
+				<div class="range" role="group" aria-label="Activity time range">
+					{#each RANGES as r (r.hours)}
+						<button
+							type="button"
+							class="range-btn"
+							class:active={rangeHours === r.hours}
+							aria-pressed={rangeHours === r.hours}
+							onclick={() => (rangeHours = r.hours)}>{r.label}</button
+						>
+					{/each}
+				</div>
+			{/snippet}
 			{#if rotational.length === 0}
 				<p class="muted">No rotational disks to show.</p>
 			{:else}
@@ -331,6 +357,32 @@
 
 	.strip-card {
 		margin-bottom: var(--gap);
+	}
+	.range {
+		display: inline-flex;
+		gap: 2px;
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 2px;
+	}
+	.range-btn {
+		border: none;
+		background: transparent;
+		color: var(--text-secondary);
+		padding: 2px 9px;
+		border-radius: var(--radius-sm);
+		font-size: 12px;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		line-height: 1.4;
+	}
+	.range-btn:hover {
+		color: var(--text-primary);
+	}
+	.range-btn.active {
+		background: var(--surface-1);
+		color: var(--series-1);
 	}
 	.strips {
 		display: flex;
