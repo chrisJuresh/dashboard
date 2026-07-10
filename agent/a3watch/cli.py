@@ -224,8 +224,13 @@ def _print_tunnel_help(cfg: cfgmod.Config) -> None:
 
 
 def cmd_sample(args) -> int:
-    from . import sample
+    from . import sample, detect
     cfg = cfgmod.load(args.config)
+    for dc in detect.discover_new_disks(cfg):
+        sys.stderr.write(
+            f"a3watch: auto-detected disk {dc.dev} ({dc.model or '?'}); monitoring "
+            f"passively (no commands) until reviewed via `a3watch detect`\n"
+        )
     s = sample.run_once(cfg)
     print(f"sample ts={s['ts']:.0f} reset={s['reset']} events={s.get('events',0)} "
           f"power_events={s.get('power_events',0)} wall={s.get('wall_ms','?')}ms "
@@ -234,8 +239,9 @@ def cmd_sample(args) -> int:
 
 
 def cmd_serve(args) -> int:
-    from . import api
+    from . import api, detect
     cfg = cfgmod.load(args.config)
+    detect.discover_new_disks(cfg)  # so /api/config shows drives added since install
     api.serve(cfg)
     return 0
 

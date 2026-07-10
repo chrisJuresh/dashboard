@@ -182,6 +182,89 @@ def _capabilities() -> dict:
 
 
 # -------------------------------------------------------------- detect ------
+def _disk_identity(dev, mounts, labels, mount_to_dev, pools, root_backing) -> dict:
+    """Non-waking identity for one whole disk (sysfs/proc/config reads only)."""
+    rot = util.is_rotational(dev)
+    mount, fs, label = "", "", ""
+    for part, (mnt, fstype) in mounts.items():
+        if _parent_disk(part) == dev:
+            mount, fs = mnt, fstype
+            label = labels.get(part, label)
+            break
+    if not label:
+        for part, lbl in labels.items():
+            if _parent_disk(part) == dev:
+                label = lbl
+                break
+    pool = ""
+    for fsname, pinfo in pools.items():
+        for branch in pinfo["branches"]:
+            if _path_owner_mount(branch, mount_to_dev) == dev:
+                pool = fsname
+    return {
+        "dev": dev,
+        "rotational": bool(rot),
+        "model": _dev_model(dev),
+        "serial": _dev_serial(dev),
+        "size_bytes": _dev_size_bytes(dev),
+        "mount": mount,
+        "fs": fs,
+        "label": label,
+        "maj_min": util.dev_maj_min(dev) or "",
+        "pool": pool,
+        "is_root": dev == root_backing,
+    }
+
+
+def enumerate_disks() -> list[dict]:
+    """Every whole block device with its non-waking identity. NO subprocess and
+    NO disk command — pure sysfs/proc/fstab reads — so it can never spin a drive
+    up. Shared by detect() and discover_new_disks()."""
+    mounts = _mounts()
+    labels = _device_labels()
+    mount_to_dev = _mount_to_dev(mounts)
+    pools = _mergerfs_pools()
+    root_backing = util.backing_block_device("/")
+    return [_disk_identity(dev, mounts, labels, mount_to_dev, pools, root_backing)
+            for dev in util.block_devices()]
+
+
+def discover_new_disks(cfg: Config) -> list[DiskCfg]:
+    """Append any whole disk present on the system but absent from the config,
+    so a newly-added drive shows up on the dashboard automatically — no manual
+    re-detect needed.
+
+    NON-WAKING (see enumerate_disks) and OBSERVE-ONLY: a discovered drive gets
+    the safest possible default — protected=True, meaning a3watch issues it NO
+    command whatsoever (not even the non-waking hdparm -C), reading state only
+    passively — and role='unknown', until a human reviews it via `a3watch
+    detect` and assigns a bay / enables probing. Append-only: existing entries
+    are never edited or dropped. Matches by stable serial first, then dev, so a
+    drive already tracked (possibly under a renamed dev) is not re-added.
+    Returns the newly-added DiskCfg list (for logging)."""
+    known_serials = {(d.serial or "").strip() for d in cfg.disks if (d.serial or "").strip()}
+    known_devs = {d.dev for d in cfg.disks}
+    added: list[DiskCfg] = []
+    try:
+        enum = enumerate_disks()
+    except OSError:
+        return added
+    for d in enum:
+        sid = (d["serial"] or "").strip()
+        if d["dev"] in known_devs or (sid and sid in known_serials):
+            continue
+        added.append(
+            DiskCfg(
+                dev=d["dev"], role="unknown", model=d["model"], serial=d["serial"],
+                label=d["label"], mount=d["mount"], fs=d["fs"],
+                size_bytes=d["size_bytes"], rotational=d["rotational"], pool=d["pool"],
+                maj_min=d["maj_min"], protected=True, monitored=True, auto_detected=True,
+            )
+        )
+    cfg.disks.extend(added)
+    return added
+
+
 def detect() -> dict:
     mounts = _mounts()
     labels = _device_labels()
@@ -191,42 +274,10 @@ def detect() -> dict:
     # resolve the device backing '/'
     root_backing = util.backing_block_device("/")
 
-    disks: list[dict] = []
-    for dev in util.block_devices():
-        rot = util.is_rotational(dev)
-        # find this disk's primary partition mount/label
-        mount, fs, label = "", "", ""
-        for part, (mnt, fstype) in mounts.items():
-            if _parent_disk(part) == dev:
-                mount, fs = mnt, fstype
-                label = labels.get(part, label)
-                break
-        if not label:
-            for part, lbl in labels.items():
-                if _parent_disk(part) == dev:
-                    label = lbl
-                    break
-        # pool membership
-        pool = ""
-        for fsname, pinfo in pools.items():
-            for branch in pinfo["branches"]:
-                if _path_owner_mount(branch, mount_to_dev) == dev:
-                    pool = fsname
-        disks.append(
-            {
-                "dev": dev,
-                "rotational": bool(rot),
-                "model": _dev_model(dev),
-                "serial": _dev_serial(dev),
-                "size_bytes": _dev_size_bytes(dev),
-                "mount": mount,
-                "fs": fs,
-                "label": label,
-                "maj_min": util.dev_maj_min(dev) or "",
-                "pool": pool,
-                "is_root": dev == root_backing,
-            }
-        )
+    disks: list[dict] = [
+        _disk_identity(dev, mounts, labels, mount_to_dev, pools, root_backing)
+        for dev in util.block_devices()
+    ]
 
     return {
         "disks": disks,

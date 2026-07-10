@@ -263,7 +263,8 @@ def q_config(cfg: Config) -> dict:
         "mode": "diagnostic" if diag.is_running(cfg) else "normal",
         "disks": [{"dev": d.dev, "role": d.role, "label": d.label, "mount": d.mount,
                    "rotational": d.rotational, "protected": d.protected,
-                   "monitored": d.monitored, "pool": d.pool} for d in cfg.disks],
+                   "monitored": d.monitored, "pool": d.pool, "model": d.model,
+                   "auto_detected": d.auto_detected} for d in cfg.disks],
     }
 
 

@@ -43,6 +43,9 @@ class DiskCfg:
     # so the chosen (non-waking) authoritative probing is actually active.
     protected: bool = True
     monitored: bool = True
+    # runtime-only marker: a drive found on the system but not yet in the config
+    # (auto-discovered). Not persisted; a human formalises it via `a3watch detect`.
+    auto_detected: bool = False
 
 
 @dataclass

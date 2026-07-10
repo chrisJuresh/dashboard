@@ -158,6 +158,8 @@ export interface ConfigView {
 		protected: boolean;
 		monitored: boolean;
 		pool: string;
+		model?: string;
+		auto_detected?: boolean;
 	}[];
 }
 

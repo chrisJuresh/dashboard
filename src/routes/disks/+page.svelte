@@ -208,7 +208,12 @@
 						<div class="strip-row">
 							<div class="strip-label">
 								<span class="dev tabular">{d.dev}</span>
-								{#if d.label}<span class="lbl muted">{d.label}</span>{/if}
+								{#if d.label}<span class="lbl muted">{d.label}</span
+									>{:else if d.model}<span class="lbl muted">{d.model}</span>{/if}
+								{#if d.auto_detected}<span
+										class="new-badge"
+										title="Auto-detected drive, not yet reviewed. a3watch is monitoring it passively — no commands are sent to it. Run `a3watch detect` to assign a bay and enable non-waking state probing.">new · review</span
+									>{/if}
 							</div>
 							<div class="strip-viz"><ActivityStrip points={stripSeries[d.dev] ?? []} /></div>
 						</div>
@@ -350,6 +355,19 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.new-badge {
+		align-self: flex-start;
+		font-size: 10px;
+		font-weight: 600;
+		line-height: 1.3;
+		padding: 1px 6px;
+		border-radius: 999px;
+		color: var(--warning);
+		background: color-mix(in srgb, var(--warning) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+		white-space: nowrap;
+		cursor: help;
 	}
 	.strip-viz {
 		min-width: 0;
