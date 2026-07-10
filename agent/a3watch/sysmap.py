@@ -424,8 +424,20 @@ def build_map(cfg: Config, home: str = "/home/chris") -> dict:
         "secrets": _safe(lambda: secrets_inventory(cfg, home), []),
         "home_tree": _safe(lambda: home_tree(home), {}),
         "pipelines": _pipelines(cfg),
-        "cloud_snapshot": None,  # filled by a one-off Cloudflare/GitHub token run
+        # point-in-time Cloudflare snapshot (DNS/Access/tunnels), written by a
+        # one-off read-only-token run into <data_dir>/cloud_snapshot.json. Not
+        # live-polled; no token is stored for the service.
+        "cloud_snapshot": _safe(lambda: _cloud_snapshot(cfg), None),
     }
+
+
+def _cloud_snapshot(cfg: Config):
+    p = os.path.join(cfg.data_dir, "cloud_snapshot.json")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
 
 
 def _pipelines(cfg: Config) -> list[dict]:

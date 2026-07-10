@@ -155,6 +155,68 @@
 		</Card>
 	</div>
 
+	<!-- Cloudflare cloud-side snapshot -->
+	{#if map.cloud_snapshot}
+		{@const cs = map.cloud_snapshot}
+		<div class="block">
+			<Card title="Cloudflare — cloud-side snapshot">
+				<p class="sub muted">
+					Point-in-time snapshot of zone <span class="mono">{cs.zone}</span> (DNS · Access ·
+					tunnel ingress), taken {new Date((cs.generated ?? 0) * 1000).toLocaleString()}. Not
+					live-polled — no token stored.
+				</p>
+
+				{#if cs.tunnels?.length}
+					<h4 class="csh">Tunnel ingress</h4>
+					{#each cs.tunnels as t (t.id)}
+						<div class="sub"><span class="mono">{t.name}</span> <span class="muted">({t.status})</span></div>
+						<ul class="plain ind">
+							{#each t.ingress as r (r.hostname + r.service)}
+								<li class="mono">
+									<span class="host">{r.hostname || '(catch-all)'}</span> → {r.service}
+								</li>
+							{/each}
+						</ul>
+					{/each}
+				{/if}
+
+				{#if cs.access_apps?.length}
+					<h4 class="csh">Access apps</h4>
+					<ul class="plain">
+						{#each cs.access_apps as a (a.domain)}
+							<li>
+								<span class="mono">{a.domain}</span>
+								<span class="muted">— {a.name} · {a.session}</span>
+								{#each a.policies as p (p.name)}
+									<div class="sub ind">{p.decision}: {p.allow.join(', ') || '—'}</div>
+								{/each}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
+				{#if cs.dns?.length}
+					<h4 class="csh">DNS ({cs.dns.length})</h4>
+					<div class="table-wrap">
+						<table>
+							<thead><tr><th>Name</th><th>Type</th><th>Content</th><th></th></tr></thead>
+							<tbody>
+								{#each cs.dns as d (d.name + d.type + d.content)}
+									<tr>
+										<td class="mono">{d.name}</td>
+										<td>{d.type}</td>
+										<td class="mono muted">{d.content}</td>
+										<td class="muted">{d.proxied ? '☁ proxied' : 'DNS-only'}</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
+			</Card>
+		</div>
+	{/if}
+
 	<!-- Git & deploy -->
 	<div class="block">
 		<Card title="Git & deploy">
@@ -279,6 +341,21 @@
 	.sub {
 		font-size: 12px;
 		margin: 4px 0 0;
+	}
+	.csh {
+		font-size: 12px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		color: var(--text-secondary);
+		margin: 16px 0 6px;
+	}
+	.ind {
+		padding-left: 14px;
+	}
+	.host {
+		color: var(--text-primary);
+		font-weight: 600;
 	}
 
 	/* pipelines */

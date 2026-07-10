@@ -236,7 +236,23 @@ export interface SysMap {
 		error?: string;
 	};
 	pipelines: { name: string; steps: string[] }[];
-	cloud_snapshot: unknown | null;
+	cloud_snapshot: CloudSnapshot | null;
+}
+
+export interface CloudSnapshot {
+	generated: number;
+	zone: string;
+	account?: string;
+	sections?: Record<string, string>;
+	dns?: { name: string; type: string; content: string; proxied: boolean }[];
+	access_apps?: {
+		name: string;
+		domain: string;
+		aud: string;
+		session: string;
+		policies: { name: string; decision: string; allow: string[] }[];
+	}[];
+	tunnels?: { name: string; id: string; status: string; ingress: { hostname: string; service: string }[] }[];
 }
 
 // ---- metrics (generic collector output) ------------------------------------
